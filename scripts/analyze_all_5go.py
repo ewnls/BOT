@@ -1,5 +1,5 @@
 """
-Analyse massive sur tout le dataset - XGBoost uniquement
+Analyse massive sur tout le dataset - XGBoost + LSTM + Transformer
 Train < 2023, backtest sur 2023+ pour tous les fichiers
 """
 
@@ -28,18 +28,21 @@ DATA_FOLDERS = {
     'crypto_binance': 'data/crypto_binance/',
 }
 
-MODELS = ['xgboost']
+MODELS = ['xgboost', 'lstm', 'transformer']  # ← 3 modèles maintenant
 INITIAL_CAPITAL = 10000
 
 SPLIT_DATE = "2023-01-01"  # tout avant = train, tout après = test
 
+# Hyperparamètres pour LSTM/Transformer
+EPOCHS = 50
+BATCH_SIZE = 32
+LOOKBACK = 60
 
 def get_timeframe_from_filename(filename: str) -> str:
     for tf in ['1w', '1d', '12h', '6h', '4h', '2h', '1h', '30m', '15m', '5m', '1m']:
         if tf in filename.lower():
             return tf
     return '1d'
-
 
 def scan_all_files():
     all_files = []
@@ -59,10 +62,9 @@ def scan_all_files():
     print(f"📂 {len(all_files)} fichiers CSV détectés")
     return all_files
 
-
 def train_and_backtest_one(args):
     """
-    1 fichier, XGBoost uniquement.
+    1 fichier, 3 modèles: XGBoost, LSTM, Transformer.
     Train sur toute l'histoire avant SPLIT_DATE, test sur SPLIT_DATE+.
     """
     file_info, index, total = args
@@ -71,13 +73,12 @@ def train_and_backtest_one(args):
     try:
         print(f"[{index}/{total}] {file_info['filename']} ({file_info['timeframe']}) [{file_info['asset_type']}]")
 
-        pipeline = TradingPipeline()
-        pipeline.load_data({file_info['timeframe']: file_info['filepath']})
+        # On prépare les données une seule fois
+        pipeline_data = TradingPipeline()
+        pipeline_data.load_data({file_info['timeframe']: file_info['filepath']})
 
-        # On laisse pipeline.prepare_training_data faire un split par ratios
-        # puis on recoupe manuellement train/test par dates sur la partie test.
         try:
-            X_train, y_train, X_val, y_val, X_test_full, y_test_full, n_feat = pipeline.prepare_training_data(
+            X_train, y_train, X_val, y_val, X_test_full, y_test_full, n_feat = pipeline_data.prepare_training_data(
                 primary_timeframe=file_info['timeframe'],
                 multi_tf=False,
                 train_end=None,
@@ -88,8 +89,8 @@ def train_and_backtest_one(args):
             print(f"   ❌ Erreur préparation données: {e}")
             return results
 
-        # Index correspondant à X_test_full / y_test_full = pipeline.test_prices.index
-        test_index_full = pipeline.test_prices.index
+        # Index correspondant à X_test_full / y_test_full = pipeline_data.test_prices.index
+        test_index_full = pipeline_data.test_prices.index
 
         split_ts = pd.to_datetime(SPLIT_DATE, utc=True)
         mask_test = test_index_full >= split_ts
@@ -100,27 +101,53 @@ def train_and_backtest_one(args):
 
         X_test = X_test_full[mask_test]
         y_test = y_test_full[mask_test]
-        pipeline.test_prices = pipeline.test_prices.loc[mask_test]
+        test_prices_filtered = pipeline_data.test_prices.loc[mask_test]
 
+        # Préparation train complet (train + val)
+        X_train_all = X_train
+        y_train_all = y_train
+        if X_val is not None and len(X_val) > 0:
+            X_train_all = np.concatenate([X_train, X_val], axis=0)
+            y_train_all = np.concatenate([y_train, y_val], axis=0)
+
+        # Boucle sur les 3 modèles
         for model_type in MODELS:
             try:
                 print(f"   → {model_type.upper()}...", flush=True)
 
-                # Entraînement sur tout X_train+X_val (on concatène pour utiliser tout < 2023)
-                X_train_all = X_train
-                y_train_all = y_train
-                if X_val is not None and len(X_val) > 0:
-                    X_train_all = np.concatenate([X_train, X_val], axis=0)
-                    y_train_all = np.concatenate([y_train, y_val], axis=0)
+                # Recréer un pipeline propre pour ce modèle
+                pipeline = TradingPipeline()
+                pipeline.load_data({file_info['timeframe']: file_info['filepath']})
+                
+                # On recopie les scalers et test_prices du pipeline_data
+                pipeline.scaler_X = pipeline_data.scaler_X
+                pipeline.scaler_y = pipeline_data.scaler_y
+                pipeline.test_prices = test_prices_filtered.copy()
+                pipeline.primary_timeframe = file_info['timeframe']
 
-                pipeline.train_model(
-                    model_type=model_type,
-                    X_train=X_train_all,
-                    y_train=y_train_all,
-                    X_val=X_val,   # utilisé pour early stopping si le modèle le supporte
-                    y_val=y_val,
-                    n_features=n_feat,
-                )
+                # Entraînement selon le type de modèle
+                if model_type == 'xgboost':
+                    pipeline.train_model(
+                        model_type='xgboost',
+                        X_train=X_train_all,
+                        y_train=y_train_all,
+                        X_val=X_val,
+                        y_val=y_val,
+                        n_features=n_feat,
+                        lookback=LOOKBACK,
+                    )
+                else:  # lstm ou transformer
+                    pipeline.train_model(
+                        model_type=model_type,
+                        X_train=X_train_all,
+                        y_train=y_train_all,
+                        X_val=X_val,
+                        y_val=y_val,
+                        n_features=n_feat,
+                        lookback=LOOKBACK,
+                        epochs=EPOCHS,
+                        batch_size=BATCH_SIZE,
+                    )
 
                 metrics, trades, equity_series = pipeline.backtest(
                     X_test,
@@ -151,13 +178,13 @@ def train_and_backtest_one(args):
 
     return results
 
-
 def main():
     print("="*80)
-    print("🚀 RÉAPPRENTISSAGE COMPLET - XGBOOST - TRAIN<2023 / TEST≥2023 (split manuel)")
+    print("🚀 RÉAPPRENTISSAGE COMPLET - XGBOOST + LSTM + TRANSFORMER - TRAIN<2023 / TEST≥2023")
     print("="*80)
     print(f"Capital initial: ${INITIAL_CAPITAL}")
     print(f"Modèles: {', '.join([m.upper() for m in MODELS])}")
+    print(f"Epochs (LSTM/Transformer): {EPOCHS}, Batch size: {BATCH_SIZE}")
     print("="*80)
 
     all_files = scan_all_files()
@@ -196,7 +223,6 @@ def main():
     df.to_csv(output_file, index=False)
     print(f"\n💾 Résultats sauvegardés: {output_file}")
     print("\n✅ ANALYSE TERMINÉE")
-
 
 if __name__ == '__main__':
     main()

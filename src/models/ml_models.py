@@ -1,355 +1,442 @@
-"""
-Modèles ML pour le trading
-LSTM, Transformer, XGBoost avec optimisations avancées
-"""
-import numpy as np
 import os
+import pickle
+import numpy as np
+from typing import Optional
+
+from xgboost import XGBClassifier, XGBRegressor
+
+# Imports TensorFlow/Keras pour LSTM et Transformer
+try:
+    import tensorflow as tf
+    from tensorflow import keras
+    from tensorflow.keras import layers
+    TF_AVAILABLE = True
+except ImportError:
+    TF_AVAILABLE = False
 
 
-class LSTMModel:
-    """Modèle LSTM avec optimisations avancées"""
-    
-    def __init__(self, lookback=60, features=30):
-        self.lookback = lookback
-        self.features = features
-        self.model = None
-    
-    def prepare_sequences(self, X, y):
-        """Convertit les données en séquences pour LSTM"""
-        n_samples = len(X) - self.lookback + 1
-        X_seq = np.zeros((n_samples, self.lookback, X.shape[1]))
-        y_seq = np.zeros((n_samples, y.shape[1]))
-        
-        for i in range(n_samples):
-            X_seq[i] = X[i:i + self.lookback]
-            y_seq[i] = y[i + self.lookback - 1]
-        
-        return X_seq, y_seq
-    
-    def build_model(self, output_dim=4):
-        """Construit l'architecture LSTM optimisée"""
-        from tensorflow.keras.models import Sequential
-        from tensorflow.keras.layers import LSTM, Dense, Dropout, BatchNormalization
-        from tensorflow.keras.optimizers import Adam
-        from tensorflow.keras.regularizers import l2
-        
-        from tensorflow.keras.layers import Input
-
-        inputs = Input(shape=(self.lookback, self.features))
-        x = LSTM(128, return_sequences=True)(inputs)
-        x = Dropout(0.3)(x)
-        x = BatchNormalization()(x)
-        x = LSTM(64, return_sequences=False)(x)
-        x = Dropout(0.3)(x)
-        x = BatchNormalization()(x)
-        x = Dense(32, activation='relu', kernel_regularizer=l2(0.01))(x)
-        x = Dropout(0.2)(x)
-        outputs = Dense(output_dim)(x)
-
-        from tensorflow.keras import Model
-        self.model = Model(inputs=inputs, outputs=outputs)
-        
-        # Optimizer Adam avec bons paramètres
-        optimizer = Adam(
-            learning_rate=0.001,
-            beta_1=0.9,
-            beta_2=0.999,
-            epsilon=1e-7
-        )
-        
-        self.model.compile(
-            optimizer=optimizer,
-            loss='mse',
-            metrics=['mae', 'mse']
-        )
-        
-        print(f"✅ Modèle LSTM construit: {self.model.count_params():,} paramètres")
-        
-        return self.model
-    
-    def train(self, X_train, y_train, X_val, y_val, epochs=100, batch_size=32, verbose=1):
-        """Entraîne avec callbacks avancés (early stopping, LR adaptatif)"""
-        from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCheckpoint
-        
-        # Early stopping
-        early_stop = EarlyStopping(
-            monitor='val_loss',
-            patience=20,
-            restore_best_weights=True,
-            verbose=1 if verbose > 0 else 0
-        )
-        
-        # Learning rate adaptatif
-        reduce_lr = ReduceLROnPlateau(
-            monitor='val_loss',
-            factor=0.5,           # Divise LR par 2
-            patience=7,           # Attend 7 epochs sans amélioration
-            min_lr=1e-7,          # LR minimum
-            verbose=1 if verbose > 0 else 0
-        )
-        
-        # Checkpoint (sauvegarde temporaire du meilleur modèle)
-        os.makedirs('models/temp', exist_ok=True)
-        checkpoint = ModelCheckpoint(
-            'models/temp/best_checkpoint.keras',
-            monitor='val_loss',
-            save_best_only=True,
-            verbose=0
-        )
-        
-        # Entraînement
-        history = self.model.fit(
-            X_train, y_train,
-            validation_data=(X_val, y_val),
-            epochs=epochs,
-            batch_size=batch_size,
-            callbacks=[early_stop, reduce_lr, checkpoint],
-            verbose=verbose
-        )
-        
-        print(f"✅ Entraînement terminé après {len(history.history['loss'])} epochs")
-        print(f"   Train loss: {history.history['loss'][-1]:.4f}")
-        print(f"   Val loss: {history.history['val_loss'][-1]:.4f}")
-        
-        return history
-    
-    def predict(self, X):
-        """Prédictions"""
-        return self.model.predict(X, verbose=0)
-    
-    def save(self, filepath):
-        """Sauvegarde le modèle"""
-        self.model.save(filepath + '.keras')
-    
-    def load(self, filepath):
-        """Charge le modèle"""
-        from tensorflow.keras.models import load_model
-        self.model = load_model(filepath + '.keras')
-
-
-class TransformerModel:
-    """Modèle Transformer pour séries temporelles"""
-    
-    def __init__(self, lookback=60, features=30):
-        self.lookback = lookback
-        self.features = features
-        self.model = None
-    
-    def prepare_sequences(self, X, y):
-        """Convertit les données en séquences"""
-        n_samples = len(X) - self.lookback + 1
-        X_seq = np.zeros((n_samples, self.lookback, X.shape[1]))
-        y_seq = np.zeros((n_samples, y.shape[1]))
-        
-        for i in range(n_samples):
-            X_seq[i] = X[i:i + self.lookback]
-            y_seq[i] = y[i + self.lookback - 1]
-        
-        return X_seq, y_seq
-    
-    def build_model(self, output_dim=4):
-        """Construit un Transformer simplifié"""
-        from tensorflow.keras.models import Sequential
-        from tensorflow.keras.layers import (
-            Dense, Dropout, LayerNormalization, 
-            MultiHeadAttention, GlobalAveragePooling1D, Input
-        )
-        from tensorflow.keras.optimizers import Adam
-        from tensorflow.keras import Model
-        
-        # Input
-        inputs = Input(shape=(self.lookback, self.features))
-        
-        # Multi-Head Attention
-        attention_output = MultiHeadAttention(
-            num_heads=4,
-            key_dim=32
-        )(inputs, inputs)
-        
-        # Add & Norm
-        x = LayerNormalization(epsilon=1e-6)(attention_output + inputs)
-        
-        # Feed Forward
-        ff = Dense(128, activation='relu')(x)
-        ff = Dropout(0.2)(ff)
-        ff = Dense(self.features)(ff)
-        
-        # Add & Norm
-        x = LayerNormalization(epsilon=1e-6)(x + ff)
-        
-        # Pooling et output
-        x = GlobalAveragePooling1D()(x)
-        x = Dense(64, activation='relu')(x)
-        x = Dropout(0.2)(x)
-        outputs = Dense(output_dim)(x)
-        
-        self.model = Model(inputs=inputs, outputs=outputs)
-        
-        # Optimizer
-        optimizer = Adam(
-            learning_rate=0.0005,  # LR plus faible pour Transformer
-            beta_1=0.9,
-            beta_2=0.999
-        )
-        
-        self.model.compile(
-            optimizer=optimizer,
-            loss='mse',
-            metrics=['mae', 'mse']
-        )
-        
-        print(f"✅ Modèle Transformer construit: {self.model.count_params():,} paramètres")
-        
-        return self.model
-    
-    def train(self, X_train, y_train, X_val, y_val, epochs=100, batch_size=32, verbose=1):
-        """Entraîne avec callbacks avancés"""
-        from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCheckpoint
-        
-        early_stop = EarlyStopping(
-            monitor='val_loss',
-            patience=20,
-            restore_best_weights=True,
-            verbose=1 if verbose > 0 else 0
-        )
-        
-        reduce_lr = ReduceLROnPlateau(
-            monitor='val_loss',
-            factor=0.5,
-            patience=7,
-            min_lr=1e-7,
-            verbose=1 if verbose > 0 else 0
-        )
-        
-        os.makedirs('models/temp', exist_ok=True)
-        checkpoint = ModelCheckpoint(
-            'models/temp/best_checkpoint.keras',
-            monitor='val_loss',
-            save_best_only=True,
-            verbose=0
-        )
-        
-        history = self.model.fit(
-            X_train, y_train,
-            validation_data=(X_val, y_val),
-            epochs=epochs,
-            batch_size=batch_size,
-            callbacks=[early_stop, reduce_lr, checkpoint],
-            verbose=verbose
-        )
-        
-        print(f"✅ Entraînement terminé après {len(history.history['loss'])} epochs")
-        print(f"   Train loss: {history.history['loss'][-1]:.4f}")
-        print(f"   Val loss: {history.history['val_loss'][-1]:.4f}")
-        
-        return history
-    
-    def predict(self, X):
-        """Prédictions"""
-        return self.model.predict(X, verbose=0)
-    
-    def save(self, filepath):
-        """Sauvegarde le modèle"""
-        self.model.save(filepath + '.keras')
-    
-    def load(self, filepath):
-        """Charge le modèle"""
-        from tensorflow.keras.models import load_model
-        self.model = load_model(filepath + '.keras')
-
+# =============================
+#       XGBOOST MODEL
+# =============================
 
 class XGBoostModel:
-    """Modèle XGBoost pour trading"""
-    
-    def __init__(self, lookback=60, features=30):
+    """
+    Wrapper XGBoost pour le pipeline:
+      - mode='class'       -> XGBClassifier sur target_class
+      - mode='reg'         -> XGBRegressor sur target_return
+      - mode='multioutput' -> 2 XGBRegressor (target_return, atr)
+    Le paramètre 'profile' permet de choisir un set d'hyperparamètres.
+    """
+
+    def __init__(
+        self,
+        lookback: int,
+        features: int,
+        mode: str = "class",
+        profile: str = "aggressive",
+        random_state: int = 42,
+        n_jobs: int = -1,
+        **_
+    ):
         self.lookback = lookback
         self.features = features
-        self.models = []  # Liste de modèles (un par output)
-    
-    def build_model(self):
-        """XGBoost n'a pas besoin de build explicite"""
-        pass
-    
-    def train(self, X_train, y_train, X_val, y_val, epochs=None, batch_size=None, extra_params=None):
-        """Entraîne 4 modèles XGBoost (un par target)"""
-        import xgboost as xgb
-        
-        print(f"🚀 Entraînement XGBoost...")
-        
-        # Paramètres par défaut
-        base_params = {
-            'objective': 'reg:squarederror',
-            'learning_rate': 0.05,
-            'max_depth': 6,
-            'min_child_weight': 3,
-            'subsample': 0.8,
-            'colsample_bytree': 0.8,
-            'gamma': 0.1,
-            'reg_alpha': 0.1,
-            'reg_lambda': 1.0,
-            'n_estimators': 200,
-            'early_stopping_rounds': 20,
-            'random_state': 42
+        self.mode = mode
+        self.profile = profile
+        self.random_state = random_state
+        self.n_jobs = n_jobs
+
+        # objets XGBoost (init dans build_model)
+        self.model_class: Optional[XGBClassifier] = None
+        self.model_reg: Optional[XGBRegressor] = None
+        self.model_reg2: Optional[XGBRegressor] = None  # pour multioutput
+
+    def _get_base_params(self):
+        """Params communs à tous les profils."""
+        return {
+            "tree_method": "hist",
+            "random_state": self.random_state,
+            "n_jobs": self.n_jobs,
         }
 
-        # Si des hyperparamètres Optuna sont fournis, on les injecte
-        if extra_params is not None:
-            print(f"🔧 Application des hyperparamètres personnalisés: {extra_params}")
-            base_params.update({
-                'max_depth': extra_params.get('max_depth', base_params['max_depth']),
-                'learning_rate': extra_params.get('learning_rate', base_params['learning_rate']),
-                'n_estimators': extra_params.get('n_estimators', base_params['n_estimators']),
-                'subsample': extra_params.get('subsample', base_params['subsample']),
-                'colsample_bytree': extra_params.get('colsample_bytree', base_params['colsample_bytree']),
-                'min_child_weight': extra_params.get('min_child_weight', base_params['min_child_weight']),
-                'gamma': extra_params.get('gamma', base_params['gamma']),
-            })
-        
-        self.models = []
-        
-        # Entraîne un modèle par output
-        for i in range(y_train.shape[1]):
-            print(f"   Training output {i+1}/4...")
-            
-            model = xgb.XGBRegressor(**base_params)
-            
-            model.fit(
-                X_train, y_train[:, i],
-                eval_set=[(X_val, y_val[:, i])],
+    def _get_profile_params(self):
+        """
+        Hyperparamètres selon le profil.
+        'aggressive' = plus profond, plus de trees.
+        'conservative' = plus régulier, moins de variance.
+        """
+        if self.profile == "aggressive":
+            params = {
+                "n_estimators": 600,
+                "max_depth": 8,
+                "learning_rate": 0.03,
+                "subsample": 0.9,
+                "colsample_bytree": 0.9,
+                "min_child_weight": 1,
+                "gamma": 0.0,
+                "reg_lambda": 1.0,
+            }
+        else:  # conservative
+            params = {
+                "n_estimators": 300,
+                "max_depth": 5,
+                "learning_rate": 0.05,
+                "subsample": 0.8,
+                "colsample_bytree": 0.8,
+                "min_child_weight": 3,
+                "gamma": 0.5,
+                "reg_lambda": 2.0,
+            }
+        return params
+
+    def build_model(self):
+        base = self._get_base_params()
+        prof = self._get_profile_params()
+
+        if self.mode == "class":
+            params = {
+                **base,
+                **prof,
+                "objective": "multi:softprob",
+                "num_class": 4,
+            }
+            self.model_class = XGBClassifier(**params)
+
+        elif self.mode == "reg":
+            params = {
+                **base,
+                **prof,
+                "objective": "reg:squarederror",
+            }
+            self.model_reg = XGBRegressor(**params)
+
+        elif self.mode == "multioutput":
+            params1 = {
+                **base,
+                **prof,
+                "objective": "reg:squarederror",
+            }
+            params2 = {
+                **base,
+                **prof,
+                "objective": "reg:squarederror",
+            }
+            self.model_reg = XGBRegressor(**params1)
+            self.model_reg2 = XGBRegressor(**params2)
+        else:
+            raise ValueError(f"Mode XGBoost inconnu: {self.mode}")
+
+    def train(self, X_train, y_train, X_val=None, y_val=None):
+        if self.mode == "class":
+            self.model_class.fit(
+                X_train,
+                y_train,
+                eval_set=[(X_val, y_val)] if X_val is not None else None,
                 verbose=False
             )
-            
-            self.models.append(model)
-        
-        print(f"✅ XGBoost entraîné")
-    
+
+        elif self.mode == "reg":
+            self.model_reg.fit(
+                X_train,
+                y_train,
+                eval_set=[(X_val, y_val)] if X_val is not None else None,
+                verbose=False
+            )
+
+        elif self.mode == "multioutput":
+            y_return = y_train[:, 0]
+            y_atr = y_train[:, 1]
+
+            y_return_val = None
+            y_atr_val = None
+            if y_val is not None:
+                y_return_val = y_val[:, 0]
+                y_atr_val = y_val[:, 1]
+
+            self.model_reg.fit(
+                X_train,
+                y_return,
+                eval_set=[(X_val, y_return_val)] if X_val is not None else None,
+                verbose=False
+            )
+            self.model_reg2.fit(
+                X_train,
+                y_atr,
+                eval_set=[(X_val, y_atr_val)] if X_val is not None else None,
+                verbose=False
+            )
+        else:
+            raise ValueError(f"Mode XGBoost inconnu: {self.mode}")
+
     def predict(self, X):
-        """Prédictions pour les 4 outputs"""
-        predictions = np.zeros((len(X), len(self.models)))
-        
-        for i, model in enumerate(self.models):
-            predictions[:, i] = model.predict(X)
-        
-        return predictions
-    
-    def save(self, filepath):
-        """Sauvegarde les modèles"""
-        import pickle
+        if self.mode == "class":
+            proba = self.model_class.predict_proba(X)
+            return proba
+
+        elif self.mode == "reg":
+            preds = self.model_reg.predict(X).reshape(-1, 1)
+            return preds
+
+        elif self.mode == "multioutput":
+            preds_return = self.model_reg.predict(X).reshape(-1, 1)
+            preds_atr = self.model_reg2.predict(X).reshape(-1, 1)
+            return np.concatenate([preds_return, preds_atr], axis=1)
+
+        else:
+            raise ValueError(f"Mode XGBoost inconnu: {self.mode}")
+
+    def save(self, filepath: str):
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
-        
-        with open(filepath + '_xgb.pkl', 'wb') as f:
-            pickle.dump(self.models, f)
-    
-    def load(self, filepath):
-        """Charge les modèles"""
-        import pickle
-        
-        with open(filepath + '_xgb.pkl', 'rb') as f:
-            self.models = pickle.load(f)
+
+        meta = {
+            "mode": self.mode,
+            "profile": self.profile,
+            "lookback": self.lookback,
+            "features": self.features,
+        }
+
+        if self.mode == "class":
+            self.model_class.save_model(filepath + "_xgb_class.json")
+
+        elif self.mode == "reg":
+            self.model_reg.save_model(filepath + "_xgb_reg.json")
+
+        elif self.mode == "multioutput":
+            self.model_reg.save_model(filepath + "_xgb_reg_return.json")
+            self.model_reg2.save_model(filepath + "_xgb_reg_atr.json")
+
+        with open(filepath + "_xgb_meta.pkl", "wb") as f:
+            pickle.dump(meta, f)
+
+    def load(self, filepath: str):
+        with open(filepath + "_xgb_meta.pkl", "rb") as f:
+            meta = pickle.load(f)
+
+        self.mode = meta.get("mode", "class")
+        self.profile = meta.get("profile", "aggressive")
+        self.lookback = meta.get("lookback", self.lookback)
+        self.features = meta.get("features", self.features)
+
+        self.build_model()
+
+        if self.mode == "class":
+            self.model_class.load_model(filepath + "_xgb_class.json")
+
+        elif self.mode == "reg":
+            self.model_reg.load_model(filepath + "_xgb_reg.json")
+
+        elif self.mode == "multioutput":
+            self.model_reg.load_model(filepath + "_xgb_reg_return.json")
+            self.model_reg2.load_model(filepath + "_xgb_reg_atr.json")
+
+        return self
 
 
-if __name__ == '__main__':
-    print("ML Models prêts!")
-    print("  - LSTMModel (avec ReduceLROnPlateau)")
-    print("  - TransformerModel (avec attention)")
-    print("  - XGBoostModel (gradient boosting)")
+# =============================
+#         LSTM MODEL
+# =============================
+
+class LSTMModel:
+    """
+    Modèle LSTM pour prédire [target_class, target_return, atr].
+    """
+
+    def __init__(self, lookback: int, features: int, **_):
+        if not TF_AVAILABLE:
+            raise ImportError("TensorFlow n'est pas installé. Installez-le avec: pip install tensorflow")
+        
+        self.lookback = lookback
+        self.features = features
+        self.model = None
+
+    def prepare_sequences(self, X, y):
+        """Transforme X (N, features) en séquences (N - lookback + 1, lookback, features)"""
+        if len(X) < self.lookback:
+            raise ValueError(f"Pas assez de données: {len(X)} < lookback {self.lookback}")
+        
+        X_seq = []
+        y_seq = []
+        
+        for i in range(self.lookback - 1, len(X)):
+            X_seq.append(X[i - self.lookback + 1:i + 1])
+            y_seq.append(y[i])
+        
+        return np.array(X_seq), np.array(y_seq)
+
+    def build_model(self, output_dim=3):
+        """Construit l'architecture LSTM"""
+        self.model = keras.Sequential([
+            layers.LSTM(128, return_sequences=True, input_shape=(self.lookback, self.features)),
+            layers.Dropout(0.2),
+            layers.LSTM(64, return_sequences=False),
+            layers.Dropout(0.2),
+            layers.Dense(32, activation='relu'),
+            layers.Dense(output_dim)  # 3 outputs: class, return, atr
+        ])
+        
+        self.model.compile(
+            optimizer=keras.optimizers.Adam(learning_rate=0.001),
+            loss='mse',
+            metrics=['mae']
+        )
+
+    def train(self, X_train, y_train, X_val=None, y_val=None, epochs=50, batch_size=32, **_):
+        """Entraîne le modèle LSTM"""
+        callbacks = [
+            keras.callbacks.EarlyStopping(patience=10, restore_best_weights=True),
+            keras.callbacks.ReduceLROnPlateau(factor=0.5, patience=5)
+        ]
+        
+        validation_data = (X_val, y_val) if X_val is not None else None
+        
+        self.model.fit(
+            X_train, y_train,
+            validation_data=validation_data,
+            epochs=epochs,
+            batch_size=batch_size,
+            callbacks=callbacks,
+            verbose=0
+        )
+
+    def predict(self, X):
+        """Prédit sur les séquences"""
+        return self.model.predict(X, verbose=0)
+
+    def save(self, filepath: str):
+        """Sauvegarde le modèle"""
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        self.model.save(filepath + "_lstm.h5")
+        
+        meta = {
+            "lookback": self.lookback,
+            "features": self.features,
+        }
+        with open(filepath + "_lstm_meta.pkl", "wb") as f:
+            pickle.dump(meta, f)
+
+    def load(self, filepath: str):
+        """Charge le modèle"""
+        self.model = keras.models.load_model(filepath + "_lstm.h5")
+        
+        with open(filepath + "_lstm_meta.pkl", "rb") as f:
+            meta = pickle.load(f)
+        
+        self.lookback = meta.get("lookback", self.lookback)
+        self.features = meta.get("features", self.features)
+        
+        return self
+
+
+# =============================
+#     TRANSFORMER MODEL
+# =============================
+
+class TransformerModel:
+    """
+    Modèle Transformer pour prédire [target_class, target_return, atr].
+    """
+
+    def __init__(self, lookback: int, features: int, **_):
+        if not TF_AVAILABLE:
+            raise ImportError("TensorFlow n'est pas installé. Installez-le avec: pip install tensorflow")
+        
+        self.lookback = lookback
+        self.features = features
+        self.model = None
+
+    def prepare_sequences(self, X, y):
+        """Transforme X (N, features) en séquences (N - lookback + 1, lookback, features)"""
+        if len(X) < self.lookback:
+            raise ValueError(f"Pas assez de données: {len(X)} < lookback {self.lookback}")
+        
+        X_seq = []
+        y_seq = []
+        
+        for i in range(self.lookback - 1, len(X)):
+            X_seq.append(X[i - self.lookback + 1:i + 1])
+            y_seq.append(y[i])
+        
+        return np.array(X_seq), np.array(y_seq)
+
+    def transformer_encoder(self, inputs, head_size, num_heads, ff_dim, dropout=0.1):
+        """Bloc encoder Transformer"""
+        # Multi-head attention
+        x = layers.MultiHeadAttention(
+            key_dim=head_size, num_heads=num_heads, dropout=dropout
+        )(inputs, inputs)
+        x = layers.Dropout(dropout)(x)
+        x = layers.LayerNormalization(epsilon=1e-6)(x + inputs)
+        
+        # Feed forward
+        ff = layers.Dense(ff_dim, activation="relu")(x)
+        ff = layers.Dropout(dropout)(ff)
+        ff = layers.Dense(inputs.shape[-1])(ff)
+        
+        return layers.LayerNormalization(epsilon=1e-6)(x + ff)
+
+    def build_model(self, output_dim=3):
+        """Construit l'architecture Transformer"""
+        inputs = keras.Input(shape=(self.lookback, self.features))
+        
+        # 2 blocs transformer
+        x = self.transformer_encoder(inputs, head_size=64, num_heads=4, ff_dim=128)
+        x = self.transformer_encoder(x, head_size=64, num_heads=4, ff_dim=128)
+        
+        # Pooling et dense layers
+        x = layers.GlobalAveragePooling1D()(x)
+        x = layers.Dense(64, activation="relu")(x)
+        x = layers.Dropout(0.2)(x)
+        outputs = layers.Dense(output_dim)(x)
+        
+        self.model = keras.Model(inputs=inputs, outputs=outputs)
+        
+        self.model.compile(
+            optimizer=keras.optimizers.Adam(learning_rate=0.001),
+            loss='mse',
+            metrics=['mae']
+        )
+
+    def train(self, X_train, y_train, X_val=None, y_val=None, epochs=50, batch_size=32, **_):
+        """Entraîne le modèle Transformer"""
+        callbacks = [
+            keras.callbacks.EarlyStopping(patience=10, restore_best_weights=True),
+            keras.callbacks.ReduceLROnPlateau(factor=0.5, patience=5)
+        ]
+        
+        validation_data = (X_val, y_val) if X_val is not None else None
+        
+        self.model.fit(
+            X_train, y_train,
+            validation_data=validation_data,
+            epochs=epochs,
+            batch_size=batch_size,
+            callbacks=callbacks,
+            verbose=0
+        )
+
+    def predict(self, X):
+        """Prédit sur les séquences"""
+        return self.model.predict(X, verbose=0)
+
+    def save(self, filepath: str):
+        """Sauvegarde le modèle"""
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        self.model.save(filepath + "_transformer.h5")
+        
+        meta = {
+            "lookback": self.lookback,
+            "features": self.features,
+        }
+        with open(filepath + "_transformer_meta.pkl", "wb") as f:
+            pickle.dump(meta, f)
+
+    def load(self, filepath: str):
+        """Charge le modèle"""
+        self.model = keras.models.load_model(filepath + "_transformer.h5")
+        
+        with open(filepath + "_transformer_meta.pkl", "rb") as f:
+            meta = pickle.load(f)
+        
+        self.lookback = meta.get("lookback", self.lookback)
+        self.features = meta.get("features", self.features)
+        
+        return self

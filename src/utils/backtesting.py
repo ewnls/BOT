@@ -26,18 +26,23 @@ class Backtester:
         self.trades = []
         self.equity_curve = []
 
-        def execute_trades(
+    def execute_trades(
         self,
         predictions: np.ndarray,
         actual_prices: pd.DataFrame,
         k_tp1: float = 1.0,
         k_tp2: float = 2.0,
         k_sl: float = 1.0,
+        use_model_filters: bool = True,
     ):
-            """
-            predictions: array (n_samples, 3) = [target_class, target_return, atr]
-            actual_prices: DataFrame avec colonnes ['open', 'high', 'low', 'close']
-            """
+        """
+        predictions: array (n_samples, 3) = [target_class, target_return, atr]
+        actual_prices: DataFrame avec colonnes ['open', 'high', 'low', 'close']
+
+        use_model_filters:
+            - True : on utilise classe + retour minimal pour filtrer les entrées
+            - False: on ignore classe/retour, on trade dès qu'on est flat + ATR OK
+        """
 
         capital = self.initial_capital
         position = None
@@ -60,19 +65,19 @@ class Backtester:
         else:
             min_bars_between_trades = 15
 
-        # Ajustement léger de TP2 pour l'intraday (prend plus souvent TP2)
+        # Ajustement léger de TP2 pour l'intraday
         if any(tf in self.timeframe for tf in ["30m", "15m", "5m"]):
             k_tp2_local = k_tp2 * 0.9
         else:
             k_tp2_local = k_tp2
 
-        # Seuil minimum sur le retour préd it (en %)
+        # Seuil minimum sur le retour prédit (très souple)
         if any(tf in self.timeframe for tf in ["5m", "15m", "30m"]):
-            min_predicted_return = 0.004  # 0,4%
+            min_predicted_return = 0.001  # 0,1%
         elif any(tf in self.timeframe for tf in ["1h", "2h", "4h"]):
-            min_predicted_return = 0.005  # 0,5%
+            min_predicted_return = 0.002  # 0,2%
         else:
-            min_predicted_return = 0.006  # 0,6%
+            min_predicted_return = 0.003  # 0,3%
 
         last_entry_idx = -9999
 
@@ -98,7 +103,7 @@ class Backtester:
             # Amplitude attendue vers TP1
             amplitude_pct = (tp1_price - current_price) / current_price
 
-            # Seuil minimum par timeframe (mouvement à viser)
+            # Seuil minimum par timeframe
             if "1w" in self.timeframe or "1d" in self.timeframe:
                 min_amplitude = 0.01  # 1%
             elif any(tf in self.timeframe for tf in ["12h", "6h"]):
@@ -118,18 +123,19 @@ class Backtester:
 
             too_soon = (i - last_entry_idx) < min_bars_between_trades
 
-            # === LOGIQUE D'ENTRÉE AVEC PREDICTIONS ===
+            # === LOGIQUE D'ENTRÉE ===
             if position is None and not too_soon:
-                # 1) On ne trade que si le modèle est haussier
-                if cls <= 0:
-                    # Pas de signal long → pas d'entrée
-                    self.equity_curve.append(capital)
-                    continue
+                if use_model_filters:
+                    # 1) Filtre directionnel très souple : on rejette seulement si clairement bearish
+                    if cls < 0:
+                        self.equity_curve.append(capital)
+                        continue
 
-                # 2) Retour attendu minimum (ex: 0.5% etc.)
-                if not np.isfinite(pred_ret) or pred_ret < min_predicted_return:
-                    self.equity_curve.append(capital)
-                    continue
+                    # 2) Retour attendu minimum très bas
+                    if np.isfinite(pred_ret) and pred_ret < min_predicted_return:
+                        self.equity_curve.append(capital)
+                        continue
+                # Sinon : on ignore cls/pred_ret et on trade dès qu'on est flat + ATR OK
 
                 entry_price = current_price * (1 + self.slippage)
 
@@ -217,7 +223,6 @@ class Backtester:
 
         return self.trades, self.equity_curve
 
-
     def calculate_metrics(self) -> Dict:
         """Calcule toutes les métriques de performance"""
         if not self.trades:
@@ -301,7 +306,7 @@ class Backtester:
             return
 
         print("=" * 60)
-        print("RAPPORT DE BACKTESTING (ATR avec filtres)")
+        print("RAPPORT DE BACKTESTING (ATR avec filtres + prédictions optionnelles)")
         print("=" * 60)
 
         print("\n📊 RÉSUMÉ DES TRADES")

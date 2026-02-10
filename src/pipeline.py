@@ -10,6 +10,8 @@ import json
 from src.utils.preprocessing import DataPreprocessorSimple
 from src.utils.backtesting import Backtester
 from src.utils.risk_manager import AGGRESSIVE_CONFIG, CONSERVATIVE_CONFIG
+from src.models.ml_models import XGBoostModel, LSTMModel, TransformerModel
+
 
 
 class TradingPipeline:
@@ -68,8 +70,8 @@ class TradingPipeline:
         return atr
 
     def _compute_dynamic_targets(self, df, feature_cols, vol_window=14,
-                                  k_tp1=1.0, k_tp2=2.0, k_sl=1.0,
-                                  horizon_bars=20):
+                                 k_tp1=1.0, k_tp2=2.0, k_sl=1.0,
+                                 horizon_bars=20):
         """
         Calcule les targets dynamiques basées sur la volatilité ATR:
         - target_class: 0=SL hit, 1=TP1 hit, 2=TP2 hit, 3=rien touché
@@ -148,14 +150,6 @@ class TradingPipeline:
                               horizon_bars=20):
         """
         Prépare les données pour l'entraînement avec targets dynamiques ATR.
-
-        Args:
-            primary_timeframe: timeframe principale
-            multi_tf: si True, fusionne plusieurs timeframes
-            train_end, val_end, test_end: dates pour split par dates
-            vol_window: fenêtre pour calcul ATR (défaut 14)
-            k_tp1, k_tp2, k_sl: multiplicateurs d'ATR pour niveaux
-            horizon_bars: nombre de bougies à scanner pour atteindre TP/SL
         """
 
         if primary_timeframe is None:
@@ -187,7 +181,9 @@ class TradingPipeline:
         df_clean = df_clean.replace([np.inf, -np.inf], np.nan)
         df_clean = df_clean.dropna()
 
+        # X = features
         X = df_clean[feature_cols].values
+        # y = 3 colonnes: [target_class, target_return, atr]
         y = df_clean[['target_class', 'target_return', 'atr']].values
 
         if not np.isfinite(X).all():
@@ -234,14 +230,13 @@ class TradingPipeline:
         X_test = test_df.iloc[:, :n_features].values
         y_test = test_df.iloc[:, n_features:].values
 
+        # Prix pour le backtest
         self.test_prices = df_clean.loc[test_df.index][['open', 'high', 'low', 'close']]
 
         return X_train, y_train, X_val, y_val, X_test, y_test, n_features
 
     def train_model(self, model_type='lstm', X_train=None, y_train=None,
                     X_val=None, y_val=None, n_features=30, lookback=60, **kwargs):
-        """Entraîne le modèle sélectionné"""
-        from src.models.ml_models import LSTMModel, TransformerModel, XGBoostModel
 
         if model_type == 'lstm':
             self.model = LSTMModel(lookback=lookback, features=n_features)
@@ -260,9 +255,24 @@ class TradingPipeline:
             self.model.train(X_train_seq, y_train_seq, X_val_seq, y_val_seq, **kwargs)
 
         elif model_type == 'xgboost':
-            self.model = XGBoostModel(lookback=lookback, features=n_features)
+            # XGBoost en mode REGRESSION sur target_return uniquement
+            self.model = XGBoostModel(
+                lookback=lookback,
+                features=n_features,
+                mode="reg",          # <-- important : forcer la régression
+                profile="aggressive"
+            )
+
+            # On ne lui passe que la colonne "target_return" normalisée
+            y_train_ret = y_train[:, 1:2]  # shape (N,1)
+            y_val_ret = y_val[:, 1:2]
+
+            # Garder un garde-fou si aucun sample
+            if X_train.shape[0] == 0 or y_train_ret.shape[0] == 0:
+                raise ValueError("Aucun sample pour XGBoost (train), vérifie tes splits / horizon")
+
             self.model.build_model()
-            self.model.train(X_train, y_train, X_val, y_val)
+            self.model.train(X_train, y_train_ret, X_val, y_val_ret)
 
     def backtest(self, X_test, y_test, initial_capital=10000, asset_type='crypto'):
         """Effectue le backtesting avec Risk Management adapté"""
@@ -272,13 +282,67 @@ class TradingPipeline:
         else:
             risk_config = CONSERVATIVE_CONFIG
 
+        # Prédictions normalisées par le modèle
         if hasattr(self.model, 'prepare_sequences'):
             X_test_seq, _ = self.model.prepare_sequences(X_test, y_test)
             predictions_normalized = self.model.predict(X_test_seq)
         else:
             predictions_normalized = self.model.predict(X_test)
 
-        predictions = self.scaler_y.inverse_transform(predictions_normalized)
+        # ----------------------------
+        # CAS LSTM / TRANSFORMER (3 dims)
+        # ----------------------------
+        if predictions_normalized.ndim == 2 and predictions_normalized.shape[1] == 3:
+            predictions = self.scaler_y.inverse_transform(predictions_normalized)
+
+        # ----------------------------
+        # CAS XGBOOST (1 seule dim: target_return)
+        # ----------------------------
+        elif predictions_normalized.ndim == 1 or predictions_normalized.shape[1] == 1:
+            preds_ret_norm = predictions_normalized.reshape(-1, 1)
+
+            # vecteur (N,3) avec:
+            #   target_class = 2 (TP2)
+            #   target_return = prédiction XGBoost (normalisée)
+            #   atr = 1.0
+            dummy_class = np.full_like(preds_ret_norm, 2.0)
+            dummy_atr = np.ones_like(preds_ret_norm)
+
+            y_concat_norm = np.concatenate(
+                [dummy_class, preds_ret_norm, dummy_atr],
+                axis=1
+            )
+
+            # inverse scaling
+            y_concat = self.scaler_y.inverse_transform(y_concat_norm)
+            target_return_real = y_concat[:, 1]
+
+            # ====== FILTRE DE CONFIANCE ======
+            abs_ret = np.abs(target_return_real)
+            threshold = np.percentile(abs_ret, 70)  # top 30% des signaux
+
+            mask = abs_ret >= threshold
+
+            if not np.any(mask):
+                filtered_returns = target_return_real
+                filtered_prices = self.test_prices.iloc[-len(target_return_real):]
+            else:
+                filtered_returns = target_return_real[mask]
+                prices_aligned = self.test_prices.iloc[-len(target_return_real):]
+                filtered_prices = prices_aligned.iloc[mask]
+
+            # reconstruction du tableau (N_filt, 3)
+            predictions = np.column_stack([
+                np.full_like(filtered_returns, 2.0),
+                filtered_returns,
+                np.ones_like(filtered_returns)
+            ])
+
+            # aligner les prix sur le filtre
+            self.test_prices = filtered_prices
+
+        else:
+            raise ValueError("Dimension des prédictions inattendue pour le backtest")
 
         backtester = Backtester(
             initial_capital=initial_capital,
@@ -306,16 +370,18 @@ class TradingPipeline:
         with open(filepath + '_scaler_y.pkl', 'wb') as f:
             pickle.dump(self.scaler_y, f)
 
+        return filepath
+
     def load_model(self, filepath, model_type='lstm', lookback=60, features=30):
         """Charge un modèle sauvegardé"""
-        from src.models.ml_models import LSTMModel, TransformerModel, XGBoostModel
+        from src.models.ml_models import XGBoostModel
 
         if model_type == 'lstm':
             self.model = LSTMModel(lookback=lookback, features=features)
         elif model_type == 'transformer':
             self.model = TransformerModel(lookback=lookback, features=features)
         elif model_type == 'xgboost':
-            self.model = XGBoostModel(lookback=lookback, features=features)
+            self.model = XGBoostModel(lookback=lookback, features=features, mode="reg")
 
         self.model.load(filepath)
 
