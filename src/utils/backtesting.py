@@ -1,5 +1,5 @@
 """
-Backtesting simple ATR
+Backtesting simple ATR avec filtres anti-surtrading
 PNL, Drawdown, Sharpe Ratio, Précision, Win Rate, Profit Factor
 """
 
@@ -16,6 +16,7 @@ class Backtester:
         initial_capital: float = 10000.0,
         commission: float = 0.001,
         slippage: float = 0.0005,
+        risk_config=None,
         timeframe: str = "1d",
     ):
         self.initial_capital = initial_capital
@@ -45,17 +46,23 @@ class Backtester:
 
         atr_pred = predictions[:, 2]
 
-        min_bars_between_trades = 5
-        last_entry_idx = -9999
+        # Cooldown adaptatif selon le timeframe
+        if "1w" in self.timeframe:
+            min_bars_between_trades = 2
+        elif "1d" in self.timeframe:
+            min_bars_between_trades = 3
+        elif any(tf in self.timeframe for tf in ["12h", "6h"]):
+            min_bars_between_trades = 5
+        elif any(tf in self.timeframe for tf in ["4h", "2h", "1h"]):
+            min_bars_between_trades = 10
+        else:
+            min_bars_between_trades = 15
 
-        print(">>> execute_trades called with", len(predictions), "samples")
+        last_entry_idx = -9999
 
         for i in range(len(predictions)):
             current_price = actual_prices.iloc[i]["close"]
             atr = atr_pred[i]
-
-            if i < 5:
-                print(f"i={i}, close={current_price}, atr={atr}")
 
             # ATR invalide → on skip
             if not np.isfinite(atr) or atr <= 0:
@@ -69,9 +76,30 @@ class Backtester:
             tp2_price = current_price + k_tp2 * atr
             sl_price = current_price - k_sl * atr
 
+            # Amplitude attendue vers TP1
+            amplitude_pct = (tp1_price - current_price) / current_price
+
+            # Seuil minimum par timeframe
+            if "1w" in self.timeframe or "1d" in self.timeframe:
+                min_amplitude = 0.01  # 1%
+            elif any(tf in self.timeframe for tf in ["12h", "6h"]):
+                min_amplitude = 0.015  # 1.5%
+            elif any(tf in self.timeframe for tf in ["4h", "2h"]):
+                min_amplitude = 0.02  # 2%
+            else:
+                min_amplitude = 0.025  # 2.5%
+
+            # Skip si mouvement trop faible
+            if amplitude_pct < min_amplitude:
+                if position:
+                    self.equity_curve.append(capital + position["shares"] * current_price)
+                else:
+                    self.equity_curve.append(capital)
+                continue
+
             too_soon = (i - last_entry_idx) < min_bars_between_trades
 
-            # === LOGIQUE D'ENTRÉE SIMPLE ===
+            # === LOGIQUE D'ENTRÉE ===
             if position is None and not too_soon:
                 entry_price = current_price * (1 + self.slippage)
 
@@ -242,7 +270,7 @@ class Backtester:
             return
 
         print("=" * 60)
-        print("RAPPORT DE BACKTESTING (ATR simple)")
+        print("RAPPORT DE BACKTESTING (ATR avec filtres)")
         print("=" * 60)
 
         print("\n📊 RÉSUMÉ DES TRADES")

@@ -161,6 +161,9 @@ def main():
     print("="*80)
 
     all_files = scan_all_files()
+    print(f"📂 Avant filtre: {len(all_files)} fichiers")
+    all_files = [f for f in all_files if "_1m.csv" not in f['filename']]
+    print(f"📂 Après filtre (1m exclus): {len(all_files)} fichiers")
     if len(all_files) == 0:
         print("❌ Aucun fichier trouvé!")
         return
