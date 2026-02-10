@@ -26,7 +26,7 @@ class Backtester:
         self.trades = []
         self.equity_curve = []
 
-    def execute_trades(
+        def execute_trades(
         self,
         predictions: np.ndarray,
         actual_prices: pd.DataFrame,
@@ -34,16 +34,18 @@ class Backtester:
         k_tp2: float = 2.0,
         k_sl: float = 1.0,
     ):
-        """
-        predictions: array (n_samples, 3) = [target_class, target_return, atr]
-        actual_prices: DataFrame avec colonnes ['open', 'high', 'low', 'close']
-        """
+            """
+            predictions: array (n_samples, 3) = [target_class, target_return, atr]
+            actual_prices: DataFrame avec colonnes ['open', 'high', 'low', 'close']
+            """
 
         capital = self.initial_capital
         position = None
         self.trades = []
         self.equity_curve = []
 
+        target_class_pred = predictions[:, 0]
+        target_return_pred = predictions[:, 1]
         atr_pred = predictions[:, 2]
 
         # Cooldown adaptatif selon le timeframe
@@ -58,11 +60,27 @@ class Backtester:
         else:
             min_bars_between_trades = 15
 
+        # Ajustement léger de TP2 pour l'intraday (prend plus souvent TP2)
+        if any(tf in self.timeframe for tf in ["30m", "15m", "5m"]):
+            k_tp2_local = k_tp2 * 0.9
+        else:
+            k_tp2_local = k_tp2
+
+        # Seuil minimum sur le retour préd it (en %)
+        if any(tf in self.timeframe for tf in ["5m", "15m", "30m"]):
+            min_predicted_return = 0.004  # 0,4%
+        elif any(tf in self.timeframe for tf in ["1h", "2h", "4h"]):
+            min_predicted_return = 0.005  # 0,5%
+        else:
+            min_predicted_return = 0.006  # 0,6%
+
         last_entry_idx = -9999
 
         for i in range(len(predictions)):
             current_price = actual_prices.iloc[i]["close"]
             atr = atr_pred[i]
+            cls = target_class_pred[i]
+            pred_ret = target_return_pred[i]
 
             # ATR invalide → on skip
             if not np.isfinite(atr) or atr <= 0:
@@ -72,14 +90,15 @@ class Backtester:
                     self.equity_curve.append(capital)
                 continue
 
+            # Targets dynamiques
             tp1_price = current_price + k_tp1 * atr
-            tp2_price = current_price + k_tp2 * atr
+            tp2_price = current_price + k_tp2_local * atr
             sl_price = current_price - k_sl * atr
 
             # Amplitude attendue vers TP1
             amplitude_pct = (tp1_price - current_price) / current_price
 
-            # Seuil minimum par timeframe
+            # Seuil minimum par timeframe (mouvement à viser)
             if "1w" in self.timeframe or "1d" in self.timeframe:
                 min_amplitude = 0.01  # 1%
             elif any(tf in self.timeframe for tf in ["12h", "6h"]):
@@ -89,7 +108,7 @@ class Backtester:
             else:
                 min_amplitude = 0.025  # 2.5%
 
-            # Skip si mouvement trop faible
+            # Skip si mouvement ATR prévu trop faible
             if amplitude_pct < min_amplitude:
                 if position:
                     self.equity_curve.append(capital + position["shares"] * current_price)
@@ -99,8 +118,19 @@ class Backtester:
 
             too_soon = (i - last_entry_idx) < min_bars_between_trades
 
-            # === LOGIQUE D'ENTRÉE ===
+            # === LOGIQUE D'ENTRÉE AVEC PREDICTIONS ===
             if position is None and not too_soon:
+                # 1) On ne trade que si le modèle est haussier
+                if cls <= 0:
+                    # Pas de signal long → pas d'entrée
+                    self.equity_curve.append(capital)
+                    continue
+
+                # 2) Retour attendu minimum (ex: 0.5% etc.)
+                if not np.isfinite(pred_ret) or pred_ret < min_predicted_return:
+                    self.equity_curve.append(capital)
+                    continue
+
                 entry_price = current_price * (1 + self.slippage)
 
                 # Position = 10% du capital
@@ -186,6 +216,7 @@ class Backtester:
             self.equity_curve.append(current_value)
 
         return self.trades, self.equity_curve
+
 
     def calculate_metrics(self) -> Dict:
         """Calcule toutes les métriques de performance"""
