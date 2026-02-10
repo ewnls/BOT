@@ -1,6 +1,6 @@
 """
 Pipeline principal pour entraîner et utiliser les modèles de trading
-Avec Risk Management intégré
+Avec Risk Management intégré + Targets dynamiques (ATR-based TP/SL)
 """
 import numpy as np
 import pandas as pd
@@ -12,7 +12,6 @@ from src.utils.backtesting import Backtester
 from src.utils.risk_manager import AGGRESSIVE_CONFIG, CONSERVATIVE_CONFIG
 
 
-
 class TradingPipeline:
     """Pipeline complet pour ML trading"""
 
@@ -21,7 +20,6 @@ class TradingPipeline:
             with open(config_path, 'r') as f:
                 self.config = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
-            # Config par défaut si fichier absent/vide
             self.config = {
                 "data_path": "data/",
                 "model_path": "models/",
@@ -45,7 +43,6 @@ class TradingPipeline:
             df = self.preprocessor.calculate_indicators(df)
             self.preprocessor.data[tf] = df
 
-            # Essaie de déduire le symbole depuis le nom de fichier (une seule fois)
             if not hasattr(self.preprocessor, "symbol"):
                 filename = os.path.basename(filepath)
                 if "_" in filename:
@@ -55,11 +52,112 @@ class TradingPipeline:
 
         return self.preprocessor
 
-    def prepare_training_data(self, primary_timeframe=None, multi_tf=False,
-                              train_end=None, val_end=None, test_end=None):
-        """Prépare les données pour l'entraînement"""
+    def _calculate_atr(self, df, period=14):
+        """Calcule l'ATR (Average True Range) - mesure de volatilité"""
+        high = df['high']
+        low = df['low']
+        close = df['close']
 
-        # Détecte automatiquement la timeframe si non spécifiée
+        tr1 = high - low
+        tr2 = (high - close.shift()).abs()
+        tr3 = (low - close.shift()).abs()
+
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = tr.rolling(period).mean()
+
+        return atr
+
+    def _compute_dynamic_targets(self, df, feature_cols, vol_window=14,
+                                  k_tp1=1.0, k_tp2=2.0, k_sl=1.0,
+                                  horizon_bars=20):
+        """
+        Calcule les targets dynamiques basées sur la volatilité ATR:
+        - target_class: 0=SL hit, 1=TP1 hit, 2=TP2 hit, 3=rien touché
+        - target_return: variation % réelle entre entry et exit
+        """
+
+        atr = self._calculate_atr(df, vol_window)
+        df = df.copy()
+        df['atr'] = atr
+
+        entry_price = df['close'].values
+        tp1_level = entry_price + k_tp1 * atr.values
+        tp2_level = entry_price + k_tp2 * atr.values
+        sl_level = entry_price - k_sl * atr.values
+
+        n = len(df)
+        target_class = np.zeros(n, dtype=int)
+        target_return = np.zeros(n, dtype=float)
+
+        highs = df['high'].values
+        lows = df['low'].values
+        closes = df['close'].values
+
+        for i in range(n - horizon_bars):
+            e = entry_price[i]
+            t1 = tp1_level[i]
+            t2 = tp2_level[i]
+            s = sl_level[i]
+
+            hit_tp1 = False
+            hit_tp2 = False
+            hit_sl = False
+            exit_price = closes[i + horizon_bars]
+
+            for j in range(1, horizon_bars + 1):
+                idx = i + j
+                hi = highs[idx]
+                lo = lows[idx]
+
+                if not hit_tp2 and hi >= t2:
+                    hit_tp2 = True
+                    exit_price = t2
+                    break
+
+                if not hit_tp1 and hi >= t1:
+                    hit_tp1 = True
+                    exit_price = t1
+
+                if lo <= s:
+                    hit_sl = True
+                    exit_price = s
+                    break
+
+            if hit_tp2:
+                target_class[i] = 2
+            elif hit_tp1:
+                target_class[i] = 1
+            elif hit_sl:
+                target_class[i] = 0
+            else:
+                target_class[i] = 3
+
+            target_return[i] = (exit_price - e) / e if e != 0 else 0.0
+
+        df_targets = pd.DataFrame({
+            'target_class': target_class,
+            'target_return': target_return,
+            'atr': df['atr'].values
+        }, index=df.index)
+
+        return df_targets
+
+    def prepare_training_data(self, primary_timeframe=None, multi_tf=False,
+                              train_end=None, val_end=None, test_end=None,
+                              vol_window=14, k_tp1=1.0, k_tp2=2.0, k_sl=1.0,
+                              horizon_bars=20):
+        """
+        Prépare les données pour l'entraînement avec targets dynamiques ATR.
+
+        Args:
+            primary_timeframe: timeframe principale
+            multi_tf: si True, fusionne plusieurs timeframes
+            train_end, val_end, test_end: dates pour split par dates
+            vol_window: fenêtre pour calcul ATR (défaut 14)
+            k_tp1, k_tp2, k_sl: multiplicateurs d'ATR pour niveaux
+            horizon_bars: nombre de bougies à scanner pour atteindre TP/SL
+        """
+
         if primary_timeframe is None:
             primary_timeframe = list(self.preprocessor.data.keys())[0]
 
@@ -72,32 +170,32 @@ class TradingPipeline:
 
         df_clean, feature_cols = self.preprocessor.prepare_features(df)
 
-        # TARGETS EN VARIATIONS % (pas prix absolus)
-        future_price = df_clean['close'].shift(-1)
-        current_price = df_clean['close']
+        # === TARGETS DYNAMIQUES (ATR-based) ===
+        df_targets = self._compute_dynamic_targets(
+            df_clean,
+            feature_cols,
+            vol_window=vol_window,
+            k_tp1=k_tp1,
+            k_tp2=k_tp2,
+            k_sl=k_sl,
+            horizon_bars=horizon_bars
+        )
 
-        df_clean['target_entry'] = (future_price - current_price) / current_price
-        df_clean['target_tp1'] = 0.015   # +1.5%
-        df_clean['target_tp2'] = 0.030   # +3.0%
-        df_clean['target_sl'] = -0.012   # -1.2%
-
+        df_clean = df_clean.join(df_targets, how='inner')
         df_clean = df_clean.dropna()
 
-        # Remplace infinity par NaN puis supprime
         df_clean = df_clean.replace([np.inf, -np.inf], np.nan)
         df_clean = df_clean.dropna()
 
         X = df_clean[feature_cols].values
-        y = df_clean[['target_entry', 'target_tp1', 'target_tp2', 'target_sl']].values
+        y = df_clean[['target_class', 'target_return', 'atr']].values
 
-        # Vérifie qu'il n'y a pas d'infinity
         if not np.isfinite(X).all():
             raise ValueError("X contient des valeurs infinies après nettoyage")
 
         if not np.isfinite(y).all():
             raise ValueError("y contient des valeurs infinies après nettoyage")
 
-        # NORMALISATION de X ET y
         from sklearn.preprocessing import StandardScaler
 
         self.scaler_X = StandardScaler()
@@ -106,7 +204,6 @@ class TradingPipeline:
         self.scaler_y = StandardScaler()
         y_scaled = self.scaler_y.fit_transform(y)
 
-        # DataFrame aligné sur l'index temps
         xy_df = pd.DataFrame(
             np.concatenate([X_scaled, y_scaled], axis=1),
             index=df_clean.index
@@ -114,7 +211,6 @@ class TradingPipeline:
 
         n_features = X_scaled.shape[1]
 
-        # Split par dates si demandé, sinon par ratios
         if train_end is not None and val_end is not None and test_end is not None:
             train_df, val_df, test_df = self.preprocessor.split_data_by_date(
                 xy_df,
@@ -138,7 +234,6 @@ class TradingPipeline:
         X_test = test_df.iloc[:, :n_features].values
         y_test = test_df.iloc[:, n_features:].values
 
-        # Prix pour le backtesting alignés sur la partie test
         self.test_prices = df_clean.loc[test_df.index][['open', 'high', 'low', 'close']]
 
         return X_train, y_train, X_val, y_val, X_test, y_test, n_features
@@ -177,14 +272,12 @@ class TradingPipeline:
         else:
             risk_config = CONSERVATIVE_CONFIG
 
-        # Prédictions (normalisées)
         if hasattr(self.model, 'prepare_sequences'):
             X_test_seq, _ = self.model.prepare_sequences(X_test, y_test)
             predictions_normalized = self.model.predict(X_test_seq)
         else:
             predictions_normalized = self.model.predict(X_test)
 
-        # DÉNORMALISATION des prédictions
         predictions = self.scaler_y.inverse_transform(predictions_normalized)
 
         backtester = Backtester(
@@ -216,7 +309,6 @@ class TradingPipeline:
     def load_model(self, filepath, model_type='lstm', lookback=60, features=30):
         """Charge un modèle sauvegardé"""
         from src.models.ml_models import LSTMModel, TransformerModel, XGBoostModel
-
 
         if model_type == 'lstm':
             self.model = LSTMModel(lookback=lookback, features=features)
