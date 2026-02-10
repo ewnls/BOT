@@ -1,24 +1,22 @@
 """
-Backtesting simplifié
+Backtesting simple ATR
 PNL, Drawdown, Sharpe Ratio, Précision, Win Rate, Profit Factor
 """
 
 import numpy as np
 import pandas as pd
 from typing import Dict
-from src.utils.risk_manager import RiskManager  # toujours utilisé pour les métriques
 
 
 class Backtester:
-    """Système de backtesting (version simplifiée pour debug)"""
+    """Système de backtesting simple basé sur l'ATR"""
 
     def __init__(
         self,
         initial_capital: float = 10000.0,
         commission: float = 0.001,
         slippage: float = 0.0005,
-        risk_config=None,
-        timeframe: str = "1d"
+        timeframe: str = "1d",
     ):
         self.initial_capital = initial_capital
         self.commission = commission
@@ -27,24 +25,17 @@ class Backtester:
         self.trades = []
         self.equity_curve = []
 
-        # On garde un RiskManager pour les métriques, mais on ne l'utilise pas pour bloquer des trades
-        self.risk_manager = RiskManager(risk_config)
-
     def execute_trades(
         self,
         predictions: np.ndarray,
         actual_prices: pd.DataFrame,
         k_tp1: float = 1.0,
         k_tp2: float = 2.0,
-        k_sl: float = 1.0
+        k_sl: float = 1.0,
     ):
         """
-        VERSION DEBUG SIMPLE :
-        - Ignore totalement RiskManager pour l'ouverture/fermeture
-        - Ouvre des trades forcés sur les premières bougies
-
         predictions: array (n_samples, 3) = [target_class, target_return, atr]
-        actual_prices: DataFrame avec ['open', 'high', 'low', 'close']
+        actual_prices: DataFrame avec colonnes ['open', 'high', 'low', 'close']
         """
 
         capital = self.initial_capital
@@ -53,6 +44,9 @@ class Backtester:
         self.equity_curve = []
 
         atr_pred = predictions[:, 2]
+
+        min_bars_between_trades = 5
+        last_entry_idx = -9999
 
         print(">>> execute_trades called with", len(predictions), "samples")
 
@@ -63,23 +57,22 @@ class Backtester:
             if i < 5:
                 print(f"i={i}, close={current_price}, atr={atr}")
 
-            # skip ATR invalide
+            # ATR invalide → on skip
             if not np.isfinite(atr) or atr <= 0:
                 if position:
-                    self.equity_curve.append(
-                        capital + position["shares"] * current_price
-                    )
+                    self.equity_curve.append(capital + position["shares"] * current_price)
                 else:
                     self.equity_curve.append(capital)
                 continue
 
             tp1_price = current_price + k_tp1 * atr
             tp2_price = current_price + k_tp2 * atr
-            sl_price  = current_price - k_sl * atr
+            sl_price = current_price - k_sl * atr
 
-            # === ENTRÉE FORCÉE POUR DEBUG ===
-            if position is None and i < 3:
-                print("OPENING FORCE TRADE at i", i)
+            too_soon = (i - last_entry_idx) < min_bars_between_trades
+
+            # === LOGIQUE D'ENTRÉE SIMPLE ===
+            if position is None and not too_soon:
                 entry_price = current_price * (1 + self.slippage)
 
                 # Position = 10% du capital
@@ -87,21 +80,24 @@ class Backtester:
                 if position_size > capital * 0.95:
                     position_size = capital * 0.95
 
-                shares = position_size / entry_price
-                commission_cost = position_size * self.commission
+                if position_size > 0:
+                    shares = position_size / entry_price
+                    commission_cost = position_size * self.commission
 
-                position = {
-                    "entry_idx": i,
-                    "entry_price": entry_price,
-                    "shares": shares,
-                    "tp1": tp1_price,
-                    "tp2": tp2_price,
-                    "sl": sl_price,
-                    "commission": commission_cost,
-                }
+                    position = {
+                        "entry_idx": i,
+                        "entry_price": entry_price,
+                        "shares": shares,
+                        "tp1": tp1_price,
+                        "tp2": tp2_price,
+                        "sl": sl_price,
+                        "commission": commission_cost,
+                    }
 
-                capital -= position_size + commission_cost
+                    capital -= position_size + commission_cost
+                    last_entry_idx = i
 
+            # === GESTION POSITION OUVERTE ===
             elif position is not None:
                 high = actual_prices.iloc[i]["high"]
                 low = actual_prices.iloc[i]["low"]
@@ -143,7 +139,9 @@ class Backtester:
                             "exit_price": exit_price,
                             "shares": position["shares"],
                             "pnl": pnl,
-                            "pnl_pct": (pnl / entry_cost) * 100 if entry_cost != 0 else 0.0,
+                            "pnl_pct": (pnl / entry_cost) * 100
+                            if entry_cost != 0
+                            else 0.0,
                             "exit_reason": exit_reason,
                             "duration": i - position["entry_idx"],
                         }
@@ -208,9 +206,6 @@ class Backtester:
             trades_df["duration"].mean() if len(trades_df) > 0 else 0.0
         )
 
-        # On continue d'utiliser les métriques internes du RiskManager pour info
-        risk_metrics = self.risk_manager.get_metrics()
-
         metrics = {
             "total_trades": len(trades_df),
             "winning_trades": len(winning_trades),
@@ -229,8 +224,6 @@ class Backtester:
             "tp1_hits": tp1_hits,
             "tp2_hits": tp2_hits,
             "sl_hits": sl_hits,
-            "risk_drawdown": round(risk_metrics["current_drawdown"] * 100, 2),
-            "peak_capital": round(risk_metrics["peak_capital"], 2),
         }
 
         return metrics
@@ -249,7 +242,7 @@ class Backtester:
             return
 
         print("=" * 60)
-        print("RAPPORT DE BACKTESTING (DEBUG SIMPLE)")
+        print("RAPPORT DE BACKTESTING (ATR simple)")
         print("=" * 60)
 
         print("\n📊 RÉSUMÉ DES TRADES")
@@ -265,7 +258,6 @@ class Backtester:
         print(f"PNL Total: ${metrics['total_pnl']} ({metrics['pnl_pct']}%)")
         print(f"Capital Initial: ${self.initial_capital}")
         print(f"Capital Final: ${metrics['final_capital']}")
-        print(f"Peak Capital: ${metrics['peak_capital']}")
 
         print("\n📈 PERFORMANCE")
         print(f"Win Rate: {metrics['win_rate']}%")
@@ -274,22 +266,11 @@ class Backtester:
 
         print("\n⚠️ RISQUE")
         print(f"Max Drawdown: {metrics['max_drawdown']}%")
-        print(f"Risk Manager Drawdown: {metrics['risk_drawdown']}%")
         print(f"Sharpe Ratio: {metrics['sharpe_ratio']}")
 
         print("\n📊 MOYENNES")
         print(f"Gain moyen: ${metrics['avg_win']}")
         print(f"Perte moyenne: ${metrics['avg_loss']}")
         print(f"Durée moyenne: {metrics['avg_trade_duration']} périodes")
-
-        print("\n🛡️ CONFIGURATION RISK MANAGEMENT")
-        print(
-            f"Max risque/trade: {self.risk_manager.config['max_risk_per_trade']*100}%"
-        )
-        print(
-            f"Max position size: {self.risk_manager.config['max_position_size']*100}%"
-        )
-        print(f"Max drawdown: {self.risk_manager.config['max_drawdown']*100}%")
-        print(f"Min Risk/Reward: {self.risk_manager.config['min_risk_reward']}")
 
         print("=" * 60)
