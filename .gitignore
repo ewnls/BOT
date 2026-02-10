@@ -1,0 +1,36 @@
+# === Python / venv / caches ===
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+
+# Jupyter / IDE
+.ipynb_checkpoints/
+.vscode/
+.idea/
+
+# === Données : ignorer tout, sauf quelques exemples ===
+
+# Ignorer tout le dossier data
+data/
+
+# Ré-autoriser les trois sous-dossiers
+!data/crypto_binance/
+!data/fiat/
+!data/stock/
+
+# Ré-ignorer tout ce qu'il y a dans ces sous-dossiers
+data/crypto_binance/*
+data/fiat/*
+data/stock/*
+
+# Garder quelques CSV d'exemple (ADAPTE les noms selon ce que tu veux pousser)
+!data/crypto_binance/BTCUSDT_1d.csv
+!data/fiat/EURUSD_1d.csv
+!data/stock/AAPL_1d.csv
+
+# === Résultats volumineux (optionnel) ===
+results/*.csv
+!results/.gitkeep
