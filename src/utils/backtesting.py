@@ -5,7 +5,7 @@ PNL, Drawdown, Sharpe Ratio, Précision, Win Rate, Profit Factor
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Tuple
-from utils.risk_manager import RiskManager
+from src.utils.risk_manager import RiskManager
 
 
 class Backtester:

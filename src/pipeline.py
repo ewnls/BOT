@@ -7,9 +7,10 @@ import pandas as pd
 import os
 import json
 
-from utils.preprocessing import DataPreprocessorSimple
-from utils.backtesting import Backtester
-from utils.risk_manager import AGGRESSIVE_CONFIG, CONSERVATIVE_CONFIG
+from src.utils.preprocessing import DataPreprocessorSimple
+from src.utils.backtesting import Backtester
+from src.utils.risk_manager import AGGRESSIVE_CONFIG, CONSERVATIVE_CONFIG
+
 
 
 class TradingPipeline:
@@ -145,7 +146,7 @@ class TradingPipeline:
     def train_model(self, model_type='lstm', X_train=None, y_train=None,
                     X_val=None, y_val=None, n_features=30, lookback=60, **kwargs):
         """Entraîne le modèle sélectionné"""
-        from models.ml_models import LSTMModel, TransformerModel, XGBoostModel
+        from src.models.ml_models import LSTMModel, TransformerModel, XGBoostModel
 
         if model_type == 'lstm':
             self.model = LSTMModel(lookback=lookback, features=n_features)
@@ -214,7 +215,8 @@ class TradingPipeline:
 
     def load_model(self, filepath, model_type='lstm', lookback=60, features=30):
         """Charge un modèle sauvegardé"""
-        from models.ml_models import LSTMModel, TransformerModel, XGBoostModel
+        from src.models.ml_models import LSTMModel, TransformerModel, XGBoostModel
+
 
         if model_type == 'lstm':
             self.model = LSTMModel(lookback=lookback, features=features)

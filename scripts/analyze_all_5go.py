@@ -10,9 +10,16 @@ os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 import warnings
 warnings.filterwarnings('ignore')
 
-from pipeline import TradingPipeline
-import pandas as pd
+import sys
 from pathlib import Path
+
+# Ajoute la racine du projet (dossier BOT) au PYTHONPATH
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.append(str(ROOT_DIR))
+
+from src.pipeline import TradingPipeline
+import pandas as pd
 from datetime import datetime
 from multiprocessing import Pool, cpu_count
 
