@@ -1,6 +1,7 @@
 """
 Analyse massive sur tout le dataset - XGBoost + LSTM + Transformer
 Train < 2023, backtest sur 2023+ pour tous les fichiers
+LSTM/Transformer uniquement sur timeframes ≥ 4h
 """
 
 import numpy as np
@@ -28,15 +29,16 @@ DATA_FOLDERS = {
     'crypto_binance': 'data/crypto_binance/',
 }
 
-MODELS = ['xgboost', 'lstm', 'transformer']  # ← 3 modèles maintenant
 INITIAL_CAPITAL = 10000
-
 SPLIT_DATE = "2023-01-01"  # tout avant = train, tout après = test
 
 # Hyperparamètres pour LSTM/Transformer
 EPOCHS = 50
 BATCH_SIZE = 32
 LOOKBACK = 60
+
+# Timeframes pour lesquels on teste les 3 modèles (sinon XGBoost seul)
+TF_LONG = ['4h', '6h', '12h', '1d', '1w']
 
 def get_timeframe_from_filename(filename: str) -> str:
     for tf in ['1w', '1d', '12h', '6h', '4h', '2h', '1h', '30m', '15m', '5m', '1m']:
@@ -64,14 +66,23 @@ def scan_all_files():
 
 def train_and_backtest_one(args):
     """
-    1 fichier, 3 modèles: XGBoost, LSTM, Transformer.
-    Train sur toute l'histoire avant SPLIT_DATE, test sur SPLIT_DATE+.
+    1 fichier, modèles selon timeframe:
+      - TF courts (5m-2h): XGBoost seul
+      - TF longs (≥4h): XGBoost + LSTM + Transformer
     """
     file_info, index, total = args
     results = []
 
+    # Adapter les modèles selon le timeframe
+    if file_info['timeframe'] in TF_LONG:
+        models_to_test = ['xgboost', 'lstm', 'transformer']
+        suffix = " [3 modèles]"
+    else:
+        models_to_test = ['xgboost']
+        suffix = " [XGBoost seul]"
+
     try:
-        print(f"[{index}/{total}] {file_info['filename']} ({file_info['timeframe']}) [{file_info['asset_type']}]")
+        print(f"[{index}/{total}] {file_info['filename']} ({file_info['timeframe']}) [{file_info['asset_type']}]{suffix}")
 
         # On prépare les données une seule fois
         pipeline_data = TradingPipeline()
@@ -110,8 +121,8 @@ def train_and_backtest_one(args):
             X_train_all = np.concatenate([X_train, X_val], axis=0)
             y_train_all = np.concatenate([y_train, y_val], axis=0)
 
-        # Boucle sur les 3 modèles
-        for model_type in MODELS:
+        # Boucle sur les modèles adaptés au timeframe
+        for model_type in models_to_test:
             try:
                 print(f"   → {model_type.upper()}...", flush=True)
 
@@ -180,10 +191,11 @@ def train_and_backtest_one(args):
 
 def main():
     print("="*80)
-    print("🚀 RÉAPPRENTISSAGE COMPLET - XGBOOST + LSTM + TRANSFORMER - TRAIN<2023 / TEST≥2023")
+    print("🚀 RÉAPPRENTISSAGE COMPLET - Stratégie optimisée par timeframe")
+    print("   • TF courts (5m-2h): XGBoost seul")
+    print("   • TF longs (≥4h): XGBoost + LSTM + Transformer")
     print("="*80)
     print(f"Capital initial: ${INITIAL_CAPITAL}")
-    print(f"Modèles: {', '.join([m.upper() for m in MODELS])}")
     print(f"Epochs (LSTM/Transformer): {EPOCHS}, Batch size: {BATCH_SIZE}")
     print("="*80)
 
