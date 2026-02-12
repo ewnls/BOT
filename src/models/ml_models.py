@@ -240,12 +240,14 @@ class LSTMModel:
     Modèle LSTM pour prédire [target_class, target_return, atr].
     """
 
-    def __init__(self, lookback: int, features: int, **_):
+    def __init__(self, lookback: int, features: int, dropout: float = 0.2, learning_rate: float = 0.001, **_):
         if not TF_AVAILABLE:
             raise ImportError("TensorFlow n'est pas installé. Installez-le avec: pip install tensorflow")
         
         self.lookback = lookback
         self.features = features
+        self.dropout = dropout
+        self.learning_rate = learning_rate
         self.model = None
 
     def prepare_sequences(self, X, y):
@@ -263,18 +265,18 @@ class LSTMModel:
         return np.array(X_seq), np.array(y_seq)
 
     def build_model(self, output_dim=3):
-        """Construit l'architecture LSTM"""
+        """Construit l'architecture LSTM avec dropout et learning_rate personnalisés"""
         self.model = keras.Sequential([
             layers.LSTM(128, return_sequences=True, input_shape=(self.lookback, self.features)),
-            layers.Dropout(0.2),
+            layers.Dropout(self.dropout),
             layers.LSTM(64, return_sequences=False),
-            layers.Dropout(0.2),
+            layers.Dropout(self.dropout),
             layers.Dense(32, activation='relu'),
-            layers.Dense(output_dim)  # 3 outputs: class, return, atr
+            layers.Dense(output_dim)
         ])
         
         self.model.compile(
-            optimizer=keras.optimizers.Adam(learning_rate=0.001),
+            optimizer=keras.optimizers.Adam(learning_rate=self.learning_rate),
             loss='mse',
             metrics=['mae']
         )
@@ -309,6 +311,8 @@ class LSTMModel:
         meta = {
             "lookback": self.lookback,
             "features": self.features,
+            "dropout": self.dropout,
+            "learning_rate": self.learning_rate,
         }
         with open(filepath + "_lstm_meta.pkl", "wb") as f:
             pickle.dump(meta, f)
@@ -322,6 +326,8 @@ class LSTMModel:
         
         self.lookback = meta.get("lookback", self.lookback)
         self.features = meta.get("features", self.features)
+        self.dropout = meta.get("dropout", 0.2)
+        self.learning_rate = meta.get("learning_rate", 0.001)
         
         return self
 
@@ -335,12 +341,14 @@ class TransformerModel:
     Modèle Transformer pour prédire [target_class, target_return, atr].
     """
 
-    def __init__(self, lookback: int, features: int, **_):
+    def __init__(self, lookback: int, features: int, dropout: float = 0.2, learning_rate: float = 0.001, **_):
         if not TF_AVAILABLE:
             raise ImportError("TensorFlow n'est pas installé. Installez-le avec: pip install tensorflow")
         
         self.lookback = lookback
         self.features = features
+        self.dropout = dropout
+        self.learning_rate = learning_rate
         self.model = None
 
     def prepare_sequences(self, X, y):
@@ -357,8 +365,11 @@ class TransformerModel:
         
         return np.array(X_seq), np.array(y_seq)
 
-    def transformer_encoder(self, inputs, head_size, num_heads, ff_dim, dropout=0.1):
-        """Bloc encoder Transformer"""
+    def transformer_encoder(self, inputs, head_size, num_heads, ff_dim, dropout=None):
+        """Bloc encoder Transformer avec dropout personnalisé"""
+        if dropout is None:
+            dropout = self.dropout
+            
         # Multi-head attention
         x = layers.MultiHeadAttention(
             key_dim=head_size, num_heads=num_heads, dropout=dropout
@@ -374,23 +385,23 @@ class TransformerModel:
         return layers.LayerNormalization(epsilon=1e-6)(x + ff)
 
     def build_model(self, output_dim=3):
-        """Construit l'architecture Transformer"""
+        """Construit l'architecture Transformer avec dropout et learning_rate personnalisés"""
         inputs = keras.Input(shape=(self.lookback, self.features))
         
         # 2 blocs transformer
-        x = self.transformer_encoder(inputs, head_size=64, num_heads=4, ff_dim=128)
-        x = self.transformer_encoder(x, head_size=64, num_heads=4, ff_dim=128)
+        x = self.transformer_encoder(inputs, head_size=64, num_heads=4, ff_dim=128, dropout=self.dropout)
+        x = self.transformer_encoder(x, head_size=64, num_heads=4, ff_dim=128, dropout=self.dropout)
         
         # Pooling et dense layers
         x = layers.GlobalAveragePooling1D()(x)
         x = layers.Dense(64, activation="relu")(x)
-        x = layers.Dropout(0.2)(x)
+        x = layers.Dropout(self.dropout)(x)
         outputs = layers.Dense(output_dim)(x)
         
         self.model = keras.Model(inputs=inputs, outputs=outputs)
         
         self.model.compile(
-            optimizer=keras.optimizers.Adam(learning_rate=0.001),
+            optimizer=keras.optimizers.Adam(learning_rate=self.learning_rate),
             loss='mse',
             metrics=['mae']
         )
@@ -425,6 +436,8 @@ class TransformerModel:
         meta = {
             "lookback": self.lookback,
             "features": self.features,
+            "dropout": self.dropout,
+            "learning_rate": self.learning_rate,
         }
         with open(filepath + "_transformer_meta.pkl", "wb") as f:
             pickle.dump(meta, f)
@@ -438,5 +451,7 @@ class TransformerModel:
         
         self.lookback = meta.get("lookback", self.lookback)
         self.features = meta.get("features", self.features)
+        self.dropout = meta.get("dropout", 0.2)
+        self.learning_rate = meta.get("learning_rate", 0.001)
         
         return self

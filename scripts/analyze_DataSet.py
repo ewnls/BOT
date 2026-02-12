@@ -209,7 +209,7 @@ def main():
 
     total_files = len(all_files)
 
-    max_workers = 7
+    max_workers = 1
     n_workers = min(max_workers, cpu_count())
     print(f"⚡ Utilisation de {n_workers} workers (CPU logiques: {cpu_count()})")
     print("="*80)

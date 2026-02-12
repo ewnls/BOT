@@ -236,10 +236,18 @@ class TradingPipeline:
         return X_train, y_train, X_val, y_val, X_test, y_test, n_features
 
     def train_model(self, model_type='lstm', X_train=None, y_train=None,
-                    X_val=None, y_val=None, n_features=30, lookback=60, **kwargs):
+            X_val=None, y_val=None, n_features=30, lookback=60, 
+            dropout=0.2, learning_rate=0.001, **kwargs):
+        """Entraîne le modèle sélectionné"""
+        from src.models.ml_models import XGBoostModel, LSTMModel, TransformerModel
 
         if model_type == 'lstm':
-            self.model = LSTMModel(lookback=lookback, features=n_features)
+            self.model = LSTMModel(
+                lookback=lookback, 
+                features=n_features,
+                dropout=dropout,
+                learning_rate=learning_rate
+            )
             X_train_seq, y_train_seq = self.model.prepare_sequences(X_train, y_train)
             X_val_seq, y_val_seq = self.model.prepare_sequences(X_val, y_val)
 
@@ -247,7 +255,12 @@ class TradingPipeline:
             self.model.train(X_train_seq, y_train_seq, X_val_seq, y_val_seq, **kwargs)
 
         elif model_type == 'transformer':
-            self.model = TransformerModel(lookback=lookback, features=n_features)
+            self.model = TransformerModel(
+                lookback=lookback, 
+                features=n_features,
+                dropout=dropout,
+                learning_rate=learning_rate
+            )
             X_train_seq, y_train_seq = self.model.prepare_sequences(X_train, y_train)
             X_val_seq, y_val_seq = self.model.prepare_sequences(X_val, y_val)
 

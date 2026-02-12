@@ -20,19 +20,23 @@ Racine du repo (simplifié) :
 
 ```text
 .
-├── pipeline.py                  # Pipeline principal ML + backtesting
-├── models/
-│   └── ml_models.py             # XGBoostModel (+ LSTM/Transformer disponibles)
-├── utils/
-│   ├── preprocessing.py         # DataPreprocessor, DataPreprocessorSimple
-│   ├── backtesting.py           # Backtester + intégration RiskManager
-│   └── risk_manager.py          # RiskManager, configs de risque
+BOT/
+├── src/
+│   ├── pipeline.py                  # Pipeline principal ML + backtesting
+│   ├── models/
+│   │   └── ml_models.py             # XGBoostModel, LSTMModel, TransformerModel
+│   └── utils/
+│       ├── preprocessing.py         # DataPreprocessor, DataPreprocessorSimple
+│       ├── backtesting.py           # Backtester + intégration RiskManager
+│       └── risk_manager.py          # RiskManager, configs de risque
 ├── data/
-│   └── crypto_binance/          # CSV OHLCV (ex: BTCUSDT_1d.csv, ETHUSDT_1h.csv, etc.)
+│   └── crypto_binance/              # CSV OHLCV (ex: BTCUSDT_1d.csv, ETHUSDT_1h.csv)
 ├── results/
-│   ├── analysis_*.csv           # Résultats d’analyse massive (multi fichiers)
-│   └── equity_*.csv             # Courbes d’equity
+│   ├── analysis_*.csv               # Résultats d'analyse massive
+│   ├── top_50_setups_to_optimize.csv
+│   └── grid_search_optimized_*.csv  # (futur) résultats grid search
 ├── scripts/
-│   └── analyze_all_5go.py       # Analyse massive / réapprentissage (train<2023, test≥2023)
+│   ├── analyze_all_DataSet.py       # Analyse massive (train<2023, test≥2023)
+│   └── grid_search_optimize.py      # Grid Search hyperparameter optimization
 ├── README.md
-└── requirements.txt (optionnel)
+└── requirements.txt
