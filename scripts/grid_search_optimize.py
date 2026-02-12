@@ -36,10 +36,10 @@ LOOKBACK = 60
 
 # Grid Search Hyperparameters
 GRID_PARAMS = {
-    'epochs': [50, 100, 150],
-    'batch_size': [16, 32, 64],
-    'dropout': [0.1, 0.2, 0.3],
-    'learning_rate': [0.0001, 0.0005, 0.001]
+    'epochs': [50, 100, 150],        # On teste 3 valeurs d'epochs
+    'batch_size': [32],              # Fixé à 32 (optimal dans la plupart des cas)
+    'dropout': [0.2],                # Fixé à 0.2 (standard)
+    'learning_rate': [0.001]         # Fixé à 0.001 (valeur par défaut)
 }
 
 # Générer toutes les combinaisons
@@ -158,10 +158,13 @@ def optimize_one_setup(args):
     """
     setup_info, setup_idx, total_setups = args
     
-    print(f"\n{'='*80}")
-    print(f"[{setup_idx}/{total_setups}] {setup_info['symbol']} {setup_info['timeframe']} - {setup_info['model']}")
-    print(f"Baseline: PNL={setup_info['pnl_pct']:+.2f}% | Sharpe={setup_info['sharpe_ratio']:.2f}")
-    print(f"{'='*80}")
+    print("="*80)
+    print("🔍 GRID SEARCH HYPERPARAMETER OPTIMIZATION - TOP 50 SETUPS (GRILLE RÉDUITE)")
+    print("="*80)
+    print(f"Combinaisons testées par setup: {len(param_combinations)} (epochs uniquement)")
+    print(f"Paramètres: epochs={GRID_PARAMS['epochs']}")
+    print(f"            batch_size=32 (fixe), dropout=0.2 (fixe), lr=0.001 (fixe)")
+    print("="*80)
     
     results = []
     
@@ -242,7 +245,7 @@ def main():
     ]
     
     # IMPORTANT: Grid Search est CPU-intensif, on réduit le nombre de workers
-    max_workers = 3  # On lance 3 setups en parallèle (chacun teste 81 configs)
+    max_workers = 4  # On lance 3 setups en parallèle (chacun teste 81 configs)
     n_workers = min(max_workers, cpu_count())
     print(f"⚡ Utilisation de {n_workers} workers")
     print("="*80)
