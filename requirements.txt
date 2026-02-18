@@ -1,17 +1,20 @@
-# Core ML/Data Science
-numpy>=1.24.0
-pandas>=2.0.0
-scikit-learn>=1.3.0
+# ── Core Data Science ────────────────────────────────────────────────────────
+numpy>=1.26.0
+pandas>=2.2.0
+scikit-learn>=1.5.0
+pyarrow>=18.0.0          # lecture CSV rapide (engine='pyarrow')
 
-# Deep Learning (TensorFlow)
-tensorflow>=2.15.0
-keras>=3.0.0
+# ── Machine Learning ─────────────────────────────────────────────────────────
+xgboost>=2.1.0
 
-# ML Models
-xgboost>=2.0.0
+# ── Deep Learning (PyTorch + AMD GPU DirectML) ───────────────────────────────
+# torch est installé automatiquement comme dépendance de torch-directml
+# NE PAS installer tensorflow (remplacé par PyTorch)
+torch-directml==0.2.5.dev240914    # accélération GPU AMD RX 9070 XT sur Windows
 
-# Web App
-flask>=3.0.0
+# ── Performance ──────────────────────────────────────────────────────────────
+numba>=0.60.0            # JIT compiler pour boucles numpy (optionnel)
 
-# Optionnel (pour calculs indicateurs optimisés)
-# TA-Lib>=0.4.28  # Nécessite compilation C, pas obligatoire
+# ── Utilitaires ──────────────────────────────────────────────────────────────
+# Les packages suivants sont dans la stdlib Python 3.11, pas besoin de les lister :
+# os, sys, json, pickle, pathlib, datetime, multiprocessing, random, logging, itertools, typing
