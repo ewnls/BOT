@@ -281,14 +281,16 @@ def _run_xgboost_only(args):
     return results
 
 
-def _run_deep_sequential(file_info, index, total, output_file):
-    """LSTM / Transformer séquentiel."""
+def _run_deep_sequential(file_info, index, total, output_file,
+                          model_types=None):   # ← ajoute ce paramètre
+    """LSTM / Transformer séquentiel sur GPU DirectML."""
     if model_types is None:
         model_types = ['lstm', 'transformer']
 
     results = []
     for model_type in model_types:
-        print(f"[{index}/{total}] {model_type.upper()} {file_info['filename']}", flush=True)
+        label = model_type.upper()
+        print(f"[{index}/{total}] {label} {file_info['filename']}", flush=True)
         try:
             pipeline_data = TradingPipeline()
             pipeline_data.load_data({file_info['timeframe']: file_info['filepath']})
@@ -336,18 +338,20 @@ def _run_deep_sequential(file_info, index, total, output_file):
                     'symbol'    : file_info['symbol'],
                     'timeframe' : file_info['timeframe'],
                     'asset_type': file_info['asset_type'],
-                    'model'     : model_type.upper(),
+                    'model'     : label,
                 })
                 results.append(metrics)
                 _save_partial(results, output_file)
                 print(f"  ✅ {metrics['total_trades']} trades | "
                       f"PNL: {metrics['pnl_pct']:+.1f}% | "
                       f"Sharpe: {metrics['sharpe_ratio']:.2f}", flush=True)
+
         except Exception as e:
-            print(f"  ❌ {model_type.upper()}: {e}", flush=True)
-            logging.error(f"{file_info['filename']} {model_type}: {e}")
+            print(f"  ❌ {label}: {e}", flush=True)
+            logging.error(f"{file_info['filename']} {label}: {e}")
 
     return results
+
 
 
 def main():
