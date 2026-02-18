@@ -24,6 +24,10 @@ import pandas as pd
 from datetime import datetime
 from multiprocessing import Pool, cpu_count
 
+# Timeframes autorisés pour LSTM (les TF courts = trop lent sur CPU)
+LSTM_ALLOWED_TF = {'1h', '2h', '4h', '6h', '12h', '1d', '1w'}
+
+
 # Seeds pour reproductibilité
 random.seed(42)
 np.random.seed(42)
@@ -278,12 +282,12 @@ def _run_xgboost_only(args):
 
 
 def _run_deep_sequential(file_info, index, total, output_file):
-    """
-    LSTM + Transformer en séquentiel sur GPU DirectML.
-    NE PAS mettre dans un Pool → TF/PyTorch + fork = crash.
-    """
+    """LSTM / Transformer séquentiel."""
+    if model_types is None:
+        model_types = ['lstm', 'transformer']
+
     results = []
-    for model_type in ['lstm', 'transformer']:
+    for model_type in model_types:
         print(f"[{index}/{total}] {model_type.upper()} {file_info['filename']}", flush=True)
         try:
             pipeline_data = TradingPipeline()
@@ -352,53 +356,106 @@ def main():
     output_file = f"results/analyze_dataset_{timestamp}.csv"
     all_results = []
 
-    # ── Sépare les fichiers par type de modèle ────────────────────────────────
-    files_xgb   = [f for f in all_files if f['timeframe'] not in TF_LONG]
-    files_deep  = [f for f in all_files if f['timeframe'] in TF_LONG]
-    total       = len(all_files)
+    # Sépare les fichiers par modèle
+    files_xgb   = all_files                          # XGBoost → tous les fichiers
+    files_lstm  = [f for f in all_files              # LSTM     → TF ≥ 1h uniquement
+                   if f['timeframe'] in LSTM_ALLOWED_TF]
+    files_trans = all_files                          # Transformer → tous les fichiers
+
+    total_ops = len(files_xgb) + len(files_lstm) + len(files_trans)
 
     print(f"\n{'='*60}")
-    print(f"📂 {total} fichiers | "
-          f"{len(files_xgb)} XGBoost CPU | "
-          f"{len(files_deep)} Deep GPU")
+    print(f"📂 {len(all_files)} fichiers | {total_ops} opérations total")
+    print(f"  XGBoost     : {len(files_xgb)} fichiers (tous TF) — CPU Pool")
+    print(f"  LSTM        : {len(files_lstm)} fichiers (TF ≥ 1h) — CPU séquentiel")
+    print(f"  Transformer : {len(files_trans)} fichiers (tous TF) — GPU DirectML")
     print(f"{'='*60}\n")
 
-    # ── Phase 1 : XGBoost en parallèle sur tous les cores ────────────────────
-    if files_xgb:
-        # Laisse 2 threads au système
-        n_workers = max(1, cpu_count() - 2)
-        print(f"⚡ Phase 1 — XGBoost ({n_workers} workers CPU)")
-
-        args_xgb = [
-            (f, i + 1, total, output_file)
-            for i, f in enumerate(files_xgb)
-        ]
-        with Pool(n_workers) as pool:
-            for batch in pool.imap_unordered(_run_xgboost_only, args_xgb):
-                all_results.extend(batch)
-                _save_partial(all_results, output_file)
-
-    # ── Phase 2 : LSTM + Transformer séquentiel sur GPU ──────────────────────
-    if files_deep:
-        print(f"\n⚡ Phase 2 — LSTM + Transformer (GPU DirectML, séquentiel)")
-        offset = len(files_xgb)
-
-        for i, file_info in enumerate(files_deep):
-            batch = _run_deep_sequential(
-                file_info, offset + i + 1, total, output_file
-            )
+    # ── Phase 1 : XGBoost en parallèle (CPU) ─────────────────────────────────
+    print(f"⚡ Phase 1/3 — XGBoost ({max(1, cpu_count()-2)} workers CPU)\n")
+    n_workers = max(1, cpu_count() - 2)
+    args_xgb  = [
+        (f, i + 1, len(files_xgb), output_file)
+        for i, f in enumerate(files_xgb)
+    ]
+    with Pool(n_workers) as pool:
+        for batch in pool.imap_unordered(_run_xgboost_only, args_xgb):
             all_results.extend(batch)
             _save_partial(all_results, output_file)
 
-    # ── Rapport final ─────────────────────────────────────────────────────────
-    if all_results:
-        df = pd.DataFrame(all_results)
-        df.to_csv(output_file, index=False)
-        print(f"\n✅ {len(df)} résultats sauvegardés → {output_file}")
-        print(df.groupby('model')[['pnl_pct', 'sharpe_ratio', 'win_rate']]
-                .mean().round(2).to_string())
-    else:
+    # ── Phase 2 : LSTM séquentiel (CPU — TF ≥ 1h) ───────────────────────────
+    print(f"\n⚡ Phase 2/3 — LSTM (CPU séquentiel, {len(files_lstm)} fichiers)\n")
+    for i, file_info in enumerate(files_lstm):
+        batch = _run_deep_sequential(
+            file_info, i + 1, len(files_lstm),
+            output_file, model_types=['lstm']
+        )
+        all_results.extend(batch)
+        _save_partial(all_results, output_file)
+
+    # ── Phase 3 : Transformer séquentiel (GPU DirectML) ──────────────────────
+    print(f"\n⚡ Phase 3/3 — Transformer (GPU DirectML, {len(files_trans)} fichiers)\n")
+    for i, file_info in enumerate(files_trans):
+        batch = _run_deep_sequential(
+            file_info, i + 1, len(files_trans),
+            output_file, model_types=['transformer']
+        )
+        all_results.extend(batch)
+        _save_partial(all_results, output_file)
+
+    # ── Récapitulatif final par modèle ────────────────────────────────────────
+    if not all_results:
         print("\n❌ Aucun résultat.")
+        return
+
+    df = pd.DataFrame(all_results)
+    df.to_csv(output_file, index=False)
+
+    print(f"\n{'='*60}")
+    print(f"📊 RÉCAPITULATIF PAR MODÈLE ({len(df)} résultats totaux)")
+    print(f"{'='*60}")
+
+    for model_name in ['XGBOOST', 'LSTM', 'TRANSFORMER']:
+        sub = df[df['model'] == model_name]
+        if sub.empty:
+            continue
+        profitable = sub[sub['pnl_pct'] > 0]
+        print(f"\n── {model_name} ({len(sub)} setups) ──────────────────────")
+        print(f"  PNL moyen       : {sub['pnl_pct'].mean():+.2f}%")
+        print(f"  PNL médian      : {sub['pnl_pct'].median():+.2f}%")
+        print(f"  PNL max         : {sub['pnl_pct'].max():+.2f}%")
+        print(f"  Sharpe moyen    : {sub['sharpe_ratio'].mean():.2f}")
+        print(f"  Sharpe max      : {sub['sharpe_ratio'].max():.2f}")
+        print(f"  Win rate moyen  : {sub['win_rate'].mean():.1f}%")
+        print(f"  Setups profitables : {len(profitable)}/{len(sub)} "
+              f"({len(profitable)/len(sub)*100:.0f}%)")
+
+        # Top 3 par Sharpe
+        top3 = sub.nlargest(3, 'sharpe_ratio')[
+            ['symbol', 'timeframe', 'pnl_pct', 'sharpe_ratio', 'win_rate']
+        ]
+        print(f"  Top 3 Sharpe :")
+        for _, r in top3.iterrows():
+            print(f"    {r['symbol']:8} {r['timeframe']:4} → "
+                  f"PNL {r['pnl_pct']:+.1f}% | "
+                  f"Sharpe {r['sharpe_ratio']:.2f} | "
+                  f"WR {r['win_rate']:.0f}%")
+
+    # Comparaison synthétique
+    print(f"\n{'='*60}")
+    print("📈 COMPARAISON SYNTHÉTIQUE")
+    print(f"{'='*60}")
+    summary = df.groupby('model').agg(
+        setups        = ('pnl_pct', 'count'),
+        pnl_moy       = ('pnl_pct', 'mean'),
+        sharpe_moy    = ('sharpe_ratio', 'mean'),
+        winrate_moy   = ('win_rate', 'mean'),
+        pct_profitable= ('pnl_pct', lambda x: (x > 0).mean() * 100),
+    ).round(2)
+    print(summary.to_string())
+    print(f"\n💾 Résultats complets → {output_file}")
+    print(f"{'='*60}")
+
 
 
 if __name__ == '__main__':

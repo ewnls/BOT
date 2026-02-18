@@ -129,15 +129,15 @@ class Backtester:
 
         # Cooldown adaptatif
         if '1w' in self.timeframe:
-            min_bars_between_trades = 2
+            min_bars_between_trades = 1
         elif '1d' in self.timeframe:
-            min_bars_between_trades = 3
+            min_bars_between_trades = 2
         elif any(tf in self.timeframe for tf in ['12h', '6h']):
-            min_bars_between_trades = 5
+            min_bars_between_trades = 3
         elif any(tf in self.timeframe for tf in ['4h', '2h', '1h']):
-            min_bars_between_trades = 10
+            min_bars_between_trades = 5
         else:
-            min_bars_between_trades = 15
+            min_bars_between_trades = 8     # 5m/15m/30m
 
         # FIX: TIMEOUT adaptatif (représente toujours ~5 jours réels)
         timeout_bars = _get_timeout_bars(self.timeframe)
@@ -148,12 +148,14 @@ class Backtester:
         ) else k_tp2
 
         # Seuil minimum retour prédit
-        if any(tf in self.timeframe for tf in ['5m', '15m', '30m']):
-            min_predicted_return = 0.001
-        elif any(tf in self.timeframe for tf in ['1h', '2h', '4h']):
-            min_predicted_return = 0.002
+        if any(tf in self.timeframe for tf in ['5m', '15m']):
+            min_predicted_return = 0.0003    # 0.03%
+        elif any(tf in self.timeframe for tf in ['30m', '1h']):
+            min_predicted_return = 0.0005    # 0.05%
+        elif any(tf in self.timeframe for tf in ['2h', '4h']):
+            min_predicted_return = 0.001     # 0.1%
         else:
-            min_predicted_return = 0.003
+            min_predicted_return = 0.002     # 0.2%
 
         last_entry_idx = -9999
 
@@ -179,13 +181,15 @@ class Backtester:
 
             # Amplitude minimale selon timeframe
             if '1w' in self.timeframe or '1d' in self.timeframe:
-                min_amplitude = 0.010
+                min_amplitude = 0.005     # 0.5%
             elif any(tf in self.timeframe for tf in ['12h', '6h']):
-                min_amplitude = 0.015
+                min_amplitude = 0.007     # 0.7%
             elif any(tf in self.timeframe for tf in ['4h', '2h']):
-                min_amplitude = 0.020
+                min_amplitude = 0.008     # 0.8%
+            elif '1h' in self.timeframe:
+                min_amplitude = 0.008     # 0.8%
             else:
-                min_amplitude = 0.025
+                min_amplitude = 0.005     # 0.5% pour intraday court
 
             if amplitude_pct < min_amplitude:
                 self.equity_curve.append(
