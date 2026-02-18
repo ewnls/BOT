@@ -1,10 +1,11 @@
 import os
 import pickle
+import random
+import multiprocessing
 import numpy as np
 from typing import Optional, Tuple
 from numpy.lib.stride_tricks import sliding_window_view
 from xgboost import XGBClassifier, XGBRegressor
-from xgboost.callback import EarlyStopping as XGBEarlyStopping
 
 import torch
 import torch.nn as nn
@@ -15,7 +16,6 @@ from torch.utils.data import TensorDataset, DataLoader
 # Seeds reproductibilité
 # ─────────────────────────────────────────────────────────────────────────────
 
-import random
 random.seed(42)
 np.random.seed(42)
 torch.manual_seed(42)
@@ -35,27 +35,31 @@ except ImportError:
 def _select_dml_device() -> torch.device:
     """
     Sélectionne le GPU discret (RX 9070 XT = index 1 sur ce système).
-    L'iGPU AMD est toujours sur l'index 0.
+    N'affiche les logs QUE dans le MainProcess (évite les doublons du Pool).
     """
+    is_main = multiprocessing.current_process().name == 'MainProcess'
+
     if not DML_AVAILABLE:
-        print("⚠️  torch_directml non disponible → CPU")
+        if is_main:
+            print("⚠️  torch_directml non disponible → CPU")
         return torch.device('cpu')
 
-    n = torch_directml.device_count()
-    print(f"🔍 Périphériques DirectML détectés ({n}):")
-    for i in range(n):
-        print(f"  [{i}] {torch_directml.device_name(i)}")
-
-    # Index 1 = RX 9070 XT, index 0 = iGPU Radeon Graphics (Ryzen intégré)
+    n          = torch_directml.device_count()
     target_idx = 1 if n > 1 else 0
-    print(f"\n🖥️  GPU sélectionné : [{target_idx}] {torch_directml.device_name(target_idx)}")
-    print(f"🖥️  LSTM device     : CPU (aten::_thnn_fused_lstm_cell non supporté DirectML)\n")
+
+    if is_main:
+        print(f"🔍 Périphériques DirectML détectés ({n}):")
+        for i in range(n):
+            print(f"  [{i}] {torch_directml.device_name(i)}")
+        print(f"\n🖥️  GPU sélectionné : [{target_idx}] {torch_directml.device_name(target_idx)}")
+        print(f"🖥️  LSTM device     : CPU (kernel fusé non supporté DirectML)\n")
+
     return torch_directml.device(target_idx)
 
 
-# GPU discret → Transformer
+# GPU discret (RX 9070 XT) → Transformer
 DML_DEVICE      = _select_dml_device()
-# CPU → LSTM (kernel fusé LSTM non supporté par DirectML)
+# CPU → LSTM (aten::_thnn_fused_lstm_cell non supporté par DirectML)
 DML_DEVICE_LSTM = torch.device('cpu')
 
 
@@ -110,9 +114,9 @@ class XGBoostModel:
                 'min_child_weight': 1,
                 'gamma'           : 0.0,
                 'reg_lambda'      : 1.0,
-                'max_bin'         : 512,   # profite du 3D V-Cache 96Mo
+                'max_bin'         : 512,   # profite du 3D V-Cache 96Mo du 9800X3D
             }
-        return {
+        return {   # conservative
             'n_estimators'    : 300,
             'max_depth'       : 5,
             'learning_rate'   : 0.05,
@@ -147,36 +151,37 @@ class XGBoostModel:
             raise ValueError(f"Mode XGBoost inconnu : '{self.mode}'")
 
     def train(self, X_train, y_train, X_val=None, y_val=None):
+        """
+        XGBoost 3.x : ni early_stopping_rounds ni callbacks dans .fit().
+        eval_set uniquement pour suivre la loss de validation.
+        """
         has_val  = X_val is not None and len(X_val) > 0
         eval_set = [(X_val, y_val)] if has_val else None
-        # EarlyStopping via callback (XGBoost 3.x)
-        callbacks = [XGBEarlyStopping(rounds=30, save_best=True)] if has_val else []
 
         if self.mode == 'class':
             self.model_class.fit(
                 X_train, y_train,
                 eval_set=eval_set,
-                callbacks=callbacks,
                 verbose=False,
             )
         elif self.mode == 'reg':
             self.model_reg.fit(
                 X_train, y_train.ravel(),
                 eval_set=eval_set,
-                callbacks=callbacks,
                 verbose=False,
             )
         elif self.mode == 'multioutput':
             ev_ret = [(X_val, y_val[:, 0])] if has_val else None
             ev_atr = [(X_val, y_val[:, 1])] if has_val else None
-            cb     = [XGBEarlyStopping(rounds=30, save_best=True)] if has_val else []
             self.model_reg.fit(
                 X_train, y_train[:, 0],
-                eval_set=ev_ret, callbacks=cb, verbose=False,
+                eval_set=ev_ret,
+                verbose=False,
             )
             self.model_reg2.fit(
                 X_train, y_train[:, 1],
-                eval_set=ev_atr, callbacks=cb, verbose=False,
+                eval_set=ev_atr,
+                verbose=False,
             )
 
     def predict(self, X) -> np.ndarray:
@@ -233,7 +238,7 @@ class _TorchSequenceMixin:
 
     def _get_device(self) -> torch.device:
         """
-        LSTM → CPU (kernel fusé non supporté DirectML)
+        LSTM      → CPU          (kernel fusé non supporté DirectML)
         Transformer → GPU DirectML (RX 9070 XT)
         """
         return DML_DEVICE_LSTM if isinstance(self, LSTMModel) else DML_DEVICE
@@ -243,7 +248,7 @@ class _TorchSequenceMixin:
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Transforme X (N, F) → (N - lookback + 1, lookback, F).
-        Vectorisé via sliding_window_view (pas de boucle Python).
+        Vectorisé via sliding_window_view — pas de boucle Python.
         """
         if len(X) < self.lookback:
             raise ValueError(
@@ -251,7 +256,7 @@ class _TorchSequenceMixin:
             )
         X_seq = sliding_window_view(
             X, (self.lookback, X.shape[1])
-        ).squeeze(1).copy()
+        ).squeeze(1).copy()   # .copy() → tableau C-contigu requis par PyTorch
         y_seq = y[self.lookback - 1:]
         return X_seq, y_seq
 
@@ -260,11 +265,11 @@ class _TorchSequenceMixin:
 
     def _train_loop(
         self,
-        X_train  : np.ndarray,
-        y_train  : np.ndarray,
-        X_val    : Optional[np.ndarray],
-        y_val    : Optional[np.ndarray],
-        epochs   : int,
+        X_train   : np.ndarray,
+        y_train   : np.ndarray,
+        X_val     : Optional[np.ndarray],
+        y_val     : Optional[np.ndarray],
+        epochs    : int,
         batch_size: int,
     ):
         """Boucle d'entraînement avec EarlyStopping + ReduceLROnPlateau."""
@@ -272,7 +277,7 @@ class _TorchSequenceMixin:
             TensorDataset(self._to_tensor(X_train), self._to_tensor(y_train)),
             batch_size=batch_size,
             shuffle=True,
-            pin_memory=False,   # non supporté par DirectML
+            pin_memory=False,   # pin_memory non supporté par DirectML
         )
 
         optimizer = torch.optim.Adam(self.net.parameters(), lr=self.learning_rate)
@@ -362,17 +367,20 @@ class _LSTMNet(nn.Module):
         self.fc2   = nn.Linear(32, output_dim)
 
     def forward(self, x):
-        x, _ = self.lstm1(x)
-        x     = self.drop1(x)
-        x, _  = self.lstm2(x)
-        x     = self.drop2(x[:, -1, :])   # dernière sortie temporelle
+        x, _  = self.lstm1(x)
+        x      = self.drop1(x)
+        x, _   = self.lstm2(x)
+        x      = self.drop2(x[:, -1, :])   # dernière sortie temporelle
         return self.fc2(self.relu(self.fc1(x)))
 
 
 class LSTMModel(_TorchSequenceMixin):
-    """LSTM entraîné sur CPU (DirectML ne supporte pas le kernel fusé LSTM)."""
+    """
+    LSTM entraîné sur CPU.
+    DirectML ne supporte pas aten::_thnn_fused_lstm_cell.
+    Utilisé uniquement sur TF ≥ 1h (5m/15m/30m trop lents sur CPU).
+    """
 
-    # Timeframes autorisés pour le LSTM (les TF courts prennent trop de temps)
     ALLOWED_TIMEFRAMES = {'1h', '2h', '4h', '6h', '12h', '1d', '1w'}
 
     def __init__(
@@ -404,7 +412,7 @@ class LSTMModel(_TorchSequenceMixin):
         X_val      : Optional[np.ndarray] = None,
         y_val      : Optional[np.ndarray] = None,
         epochs     : int = 50,
-        batch_size : int = 128,   # batch plus petit sur CPU
+        batch_size : int = 128,   # batch réduit sur CPU
         **_,
     ):
         self._train_loop(X_train, y_train, X_val, y_val, epochs, batch_size)
@@ -426,7 +434,11 @@ class LSTMModel(_TorchSequenceMixin):
         self.units         = tuple(meta.get('units', [128, 64]))
         self.build_model(output_dim=meta.get('output_dim', 3))
         self.net.load_state_dict(
-            torch.load(filepath + '_lstm.pt', map_location=DML_DEVICE_LSTM)
+            torch.load(
+                filepath + '_lstm.pt',
+                map_location=DML_DEVICE_LSTM,
+                weights_only=True,
+            )
         )
         return self
 
@@ -450,9 +462,9 @@ class _TransformerNet(nn.Module):
         self.drop    = nn.Dropout(dropout)
         self.fc2     = nn.Linear(dense_dim, output_dim)
 
-    def forward(self, x):                                     # x : (B, T, F)
-        x = self.encoder(x)                                   # (B, T, F)
-        x = self.pool(x.permute(0, 2, 1)).squeeze(-1)         # (B, F)
+    def forward(self, x):                                      # x : (B, T, F)
+        x = self.encoder(x)                                    # (B, T, F)
+        x = self.pool(x.permute(0, 2, 1)).squeeze(-1)          # (B, F)
         return self.fc2(self.drop(self.relu(self.fc1(x))))
 
 
@@ -499,7 +511,7 @@ class TransformerModel(_TorchSequenceMixin):
         X_val      : Optional[np.ndarray] = None,
         y_val      : Optional[np.ndarray] = None,
         epochs     : int = 50,
-        batch_size : int = 256,   # large batch → profite des 16Go VRAM
+        batch_size : int = 256,   # large batch — profite des 16 Go VRAM
         **_,
     ):
         self._train_loop(X_train, y_train, X_val, y_val, epochs, batch_size)
@@ -525,6 +537,10 @@ class TransformerModel(_TorchSequenceMixin):
         self.dense_dim     = meta.get('dense_dim',  64)
         self.build_model(output_dim=meta.get('output_dim', 3))
         self.net.load_state_dict(
-            torch.load(filepath + '_transformer.pt', map_location=DML_DEVICE)
+            torch.load(
+                filepath + '_transformer.pt',
+                map_location=DML_DEVICE,
+                weights_only=True,
+            )
         )
         return self
