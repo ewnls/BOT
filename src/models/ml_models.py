@@ -42,9 +42,8 @@ def _select_dml_device() -> torch.device:
         name = torch_directml.device_name(i)
         flag = "← iGPU (ignoré)" if any(kw in name.lower() for kw in igpu_keywords) else "← discret ✅"
         print(f"  [{i}] {name}  {flag}")
-        if flag.endswith("✅"):
-            best_idx = i
-            break
+        target_idx = 1 if n > 1 else 0
+    
 
     selected_name = torch_directml.device_name(best_idx)
     print(f"\n🖥️  GPU sélectionné: [{best_idx}] {selected_name}\n")
@@ -142,7 +141,12 @@ class XGBoostModel:
             raise ValueError(f"Mode XGBoost inconnu: '{self.mode}'")
 
     def train(self, X_train, y_train, X_val=None, y_val=None):
-        eval_set = [(X_val, y_val)] if X_val is not None else None
+        from xgboost.callback import EarlyStopping
+        has_val  = X_val is not None and len(X_val) > 0
+        eval_set = [(X_val, y_val)] if has_val else None
+
+        # EarlyStopping uniquement si eval_set fourni (XGBoost 3.x)
+        callbacks = [EarlyStopping(rounds=30, save_best=True)] if has_val else []
 
         if self.mode == 'class':
             self.model_class.fit(
@@ -153,7 +157,6 @@ class XGBoostModel:
             self.model_reg.fit(
                 X_train, y_train.ravel(),
                 eval_set=eval_set, verbose=False,
-                early_stopping_rounds=30 if eval_set else None,
             )
         elif self.mode == 'multioutput':
             ev_ret = [(X_val, y_val[:, 0])] if X_val is not None else None
