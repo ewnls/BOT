@@ -237,20 +237,13 @@ class RiskManager:
 #   max_risk_per_trade: 0.10 → 0.05 (10% risqué/trade trop élevé)
 #   min_risk_reward  : 0.50 → 1.20  (0.5 = perdre 2 pour gagner 1, ruine structurelle)
 AGGRESSIVE_CONFIG = {
-    'initial_capital'        : 10000,
-    'max_risk_per_trade'     : 0.05,   # 5% du capital risqué par trade (crypto ok)
-    'max_position_size'      : 0.30,   # 30% max du capital par position
-    'max_daily_risk'         : 0.15,   # 15% max perdu par jour
-    'max_drawdown'           : 0.30,   # Stop si -30% depuis le peak
-    'use_atr_stops'          : True,
-    'atr_multiplier_sl'      : 1.5,
-    'atr_multiplier_tp'      : 2.5,
-    'min_risk_reward'        : 1.20,   # Minimum : gagner 1.2× ce qu'on risque
-    'max_concurrent_trades'  : 5,
-    'max_correlated_trades'  : 3,
-    'min_time_between_trades': 30,
-    'use_kelly'              : False,
-    'kelly_fraction'         : 0.25,
+    'initial_capital'    : 10000,
+    'max_risk_per_trade' : 0.10,   # 10%
+    'max_position_size'  : 0.90,   # 90% du capital
+    'max_daily_risk'     : 0.50,   # 50%
+    'max_drawdown'       : 0.80,   # 80%
+    'max_concurrent_trades': 10,
+    'min_risk_reward'    : 1.0,    # remonte à 1.0 (1:1 minimum)
 }
 
 # FIX: CONSERVATIVE_CONFIG — min_risk_reward corrigé (0.5 → 1.5)
