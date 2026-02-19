@@ -35,7 +35,7 @@ except ImportError:
 def _select_dml_device() -> torch.device:
     """
     Sélectionne le GPU discret (RX 9070 XT = index 1 sur ce système).
-    N'affiche les logs QUE dans le MainProcess (évite les doublons du Pool).
+    N'affiche les logs QUE dans le MainProcess (évite les doublons si Pool).
     """
     is_main = multiprocessing.current_process().name == 'MainProcess'
 
@@ -45,14 +45,14 @@ def _select_dml_device() -> torch.device:
         return torch.device('cpu')
 
     n          = torch_directml.device_count()
-    target_idx = 1 if n > 1 else 0
+    target_idx = 1 if n > 1 else 0   # 0 = iGPU, 1 = RX 9070 XT chez toi
 
     if is_main:
         print(f"🔍 Périphériques DirectML détectés ({n}):")
         for i in range(n):
             print(f"  [{i}] {torch_directml.device_name(i)}")
         print(f"\n🖥️  GPU sélectionné : [{target_idx}] {torch_directml.device_name(target_idx)}")
-        print(f"🖥️  LSTM device     : CPU (kernel fusé non supporté DirectML)\n")
+        print(f"🖥️  LSTM device     : CPU (kernel LSTM fusé non supporté DirectML)\n")
 
     return torch_directml.device(target_idx)
 
@@ -114,7 +114,7 @@ class XGBoostModel:
                 'min_child_weight': 1,
                 'gamma'           : 0.0,
                 'reg_lambda'      : 1.0,
-                'max_bin'         : 512,   # profite du 3D V-Cache 96Mo du 9800X3D
+                'max_bin'         : 512,   # profite du 3D V-Cache 96Mo
             }
         return {   # conservative
             'n_estimators'    : 300,
@@ -152,8 +152,8 @@ class XGBoostModel:
 
     def train(self, X_train, y_train, X_val=None, y_val=None):
         """
-        XGBoost 3.x : ni early_stopping_rounds ni callbacks dans .fit().
-        eval_set uniquement pour suivre la loss de validation.
+        XGBoost 3.x : on n'utilise ni early_stopping_rounds ni callbacks
+        dans .fit(), uniquement eval_set pour le suivi des métriques.
         """
         has_val  = X_val is not None and len(X_val) > 0
         eval_set = [(X_val, y_val)] if has_val else None
@@ -256,7 +256,7 @@ class _TorchSequenceMixin:
             )
         X_seq = sliding_window_view(
             X, (self.lookback, X.shape[1])
-        ).squeeze(1).copy()   # .copy() → tableau C-contigu requis par PyTorch
+        ).squeeze(1).copy()   # .copy() → C-contigu requis par PyTorch
         y_seq = y[self.lookback - 1:]
         return X_seq, y_seq
 
@@ -352,7 +352,6 @@ class _TorchSequenceMixin:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LSTM (PyTorch — CPU)
-# Limité aux TF ≥ 1h dans analyze_DataSet (trop lent sur intraday court)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class _LSTMNet(nn.Module):
@@ -377,8 +376,7 @@ class _LSTMNet(nn.Module):
 class LSTMModel(_TorchSequenceMixin):
     """
     LSTM entraîné sur CPU.
-    DirectML ne supporte pas aten::_thnn_fused_lstm_cell.
-    Utilisé uniquement sur TF ≥ 1h (5m/15m/30m trop lents sur CPU).
+    Utilisé uniquement sur TF ≥ 1h dans analyze_DataSet.
     """
 
     ALLOWED_TIMEFRAMES = {'1h', '2h', '4h', '6h', '12h', '1d', '1w'}
@@ -434,11 +432,7 @@ class LSTMModel(_TorchSequenceMixin):
         self.units         = tuple(meta.get('units', [128, 64]))
         self.build_model(output_dim=meta.get('output_dim', 3))
         self.net.load_state_dict(
-            torch.load(
-                filepath + '_lstm.pt',
-                map_location=DML_DEVICE_LSTM,
-                weights_only=True,
-            )
+            torch.load(filepath + '_lstm.pt', map_location=DML_DEVICE_LSTM)
         )
         return self
 
@@ -537,10 +531,6 @@ class TransformerModel(_TorchSequenceMixin):
         self.dense_dim     = meta.get('dense_dim',  64)
         self.build_model(output_dim=meta.get('output_dim', 3))
         self.net.load_state_dict(
-            torch.load(
-                filepath + '_transformer.pt',
-                map_location=DML_DEVICE,
-                weights_only=True,
-            )
+            torch.load(filepath + '_transformer.pt', map_location=DML_DEVICE)
         )
         return self

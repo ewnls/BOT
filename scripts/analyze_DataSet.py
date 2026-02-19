@@ -58,7 +58,7 @@ LSTM_THREADS_PER_WORKER = 4
 # Contrôle des phases
 # ─────────────────────────────────────────────────────────────────────────────
 
-RUN_XGBOOST     = False   # déjà fait → skip
+RUN_XGBOOST     = True   # déjà fait → skip
 RUN_LSTM        = True
 RUN_TRANSFORMER = True
 
